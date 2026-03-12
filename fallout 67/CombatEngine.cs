@@ -20,25 +20,36 @@ namespace fallover_67
     {
         private static Random rng = new Random();
 
-        public static StrikeResult ExecuteCombatTurn(string targetName, int weaponIndex)
+        public static long PreCalculatePlayerDamage(string targetName, int weaponIndex)
+        {
+            if (!GameEngine.Nations.TryGetValue(targetName, out Nation target)) return 0;
+            double fraction = weaponIndex switch {
+                0 => 0.10 + rng.NextDouble() * 0.20,
+                1 => 0.40 + rng.NextDouble() * 0.30,
+                2 => 0.35 + rng.NextDouble() * 0.30,
+                3 => 0.15,
+                _ => 0.10
+            };
+            long casualties = (long)(target.MaxPopulation * fraction);
+            return Math.Min(casualties, target.Population);
+        }
+
+        public static StrikeResult ExecuteCombatTurn(string targetName, int weaponIndex, long forcedCasualties)
         {
             var result = new StrikeResult();
             Nation target = GameEngine.Nations[targetName];
-            target.IsHostileToPlayer = true;
+            if (!target.IsHumanControlled) target.IsHostileToPlayer = true;
             target.AngerLevel = Math.Min(10, target.AngerLevel + rng.Next(2, 4));
 
             string weaponName = "STANDARD NUKE";
-            double fraction = 0;
-
-            if (weaponIndex == 0) { weaponName = "STANDARD NUKE";  fraction = 0.10 + rng.NextDouble() * 0.20; }
-            if (weaponIndex == 1) { weaponName = "TSAR BOMBA";     fraction = 0.40 + rng.NextDouble() * 0.30; }
-            if (weaponIndex == 2) { weaponName = "BIO-PLAGUE";     fraction = 0.35 + rng.NextDouble() * 0.30; }
-            if (weaponIndex == 3) { weaponName = "ORBITAL LASER";  fraction = 0.15; }
+            if (weaponIndex == 0) weaponName = "STANDARD NUKE";
+            if (weaponIndex == 1) weaponName = "TSAR BOMBA";
+            if (weaponIndex == 2) weaponName = "BIO-PLAGUE";
+            if (weaponIndex == 3) weaponName = "ORBITAL LASER";
 
             result.Logs.Add($"[STRIKE INITIATED] Payload: {weaponName} -> Destination: {target.Name.ToUpper()}");
 
-            long casualties = (long)(target.MaxPopulation * fraction);
-            if (casualties > target.Population) casualties = target.Population;
+            long casualties = Math.Min(forcedCasualties, target.Population);
             target.Population -= casualties;
             result.Logs.Add($"[IMPACT] Confirming hits. Est. Enemy Casualties: {casualties:N0}");
 
@@ -54,7 +65,7 @@ namespace fallover_67
             // Collect player ally support strikes (damage pre-rolled; applied when missile lands)
             foreach (string allyName in GameEngine.Player.Allies)
             {
-                if (GameEngine.Nations.TryGetValue(allyName, out Nation ally) && !ally.IsDefeated)
+                if (GameEngine.Nations.TryGetValue(allyName, out Nation ally) && !ally.IsDefeated && !ally.IsHumanControlled)
                 {
                     if (rng.NextDouble() < 0.6)
                     {
@@ -91,12 +102,12 @@ namespace fallover_67
         // Finds nations that will retaliate — damage is NOT applied here; the animated missile does it
         private static void CollectRetaliators(Nation primaryTarget, StrikeResult result)
         {
-            if (!primaryTarget.IsDefeated && primaryTarget.Nukes > 0)
+            if (!primaryTarget.IsDefeated && !primaryTarget.IsHumanControlled && primaryTarget.Nukes > 0)
                 result.Retaliators.Add(primaryTarget.Name);
 
             foreach (string allyName in primaryTarget.Allies)
             {
-                if (GameEngine.Nations.TryGetValue(allyName, out Nation ally) && !ally.IsDefeated && ally.Nukes > 0)
+                if (GameEngine.Nations.TryGetValue(allyName, out Nation ally) && !ally.IsDefeated && !ally.IsHumanControlled && ally.Nukes > 0)
                 {
                     ally.IsHostileToPlayer = true;
                     result.Retaliators.Add(ally.Name);
@@ -115,6 +126,35 @@ namespace fallover_67
             attacker.Nukes--;
             log.Add($"[CATASTROPHE] ⚠ DIRECT HIT FROM {attackerName.ToUpper()} ⚠");
             TakePlayerDamage(attacker.Difficulty, attackerName, log, domeBlockFraction);
+            return log;
+        }
+
+        // Called when a human player (via multiplayer) strikes the local player's nation with a pre-rolled damage value.
+        public static List<string> ApplyForcedEnemyStrike(long incomingDamage)
+        {
+            var log = new List<string>();
+            long dmg = incomingDamage;
+
+            if (GameEngine.Player.IronDomeLevel > 0)
+            {
+                double domeBlock = Math.Min(0.6, 0.15 * GameEngine.Player.IronDomeLevel);
+                long blocked = (long)(dmg * domeBlock);
+                dmg -= blocked;
+                if (blocked > 0) log.Add($"[DEFENSE] Iron Dome saved {blocked:N0} citizens.");
+            }
+
+            if (GameEngine.Player.BunkerLevel > 0)
+            {
+                double bunkerBlock = Math.Min(0.5, 0.10 * GameEngine.Player.BunkerLevel);
+                long blocked = (long)(dmg * bunkerBlock);
+                dmg -= blocked;
+                if (blocked > 0) log.Add($"[DEFENSE] Deep Bunker Network shielded {blocked:N0} citizens.");
+            }
+
+            dmg = Math.Min(dmg, GameEngine.Player.Population);
+            GameEngine.Player.Population -= dmg;
+            log.Add($"[CATASTROPHE] ⚠ DIRECT HIT ⚠");
+            log.Add($"[CASUALTY REPORT] We took {dmg:N0} casualties from the strike!");
             return log;
         }
 
@@ -160,23 +200,19 @@ namespace fallover_67
         }
 
         // Used by multiplayer to apply another human player's strike without player-hostile side-effects
-        public static (long casualties, bool defeated) ExecuteRemotePlayerStrike(string targetName, int weaponIndex)
+        public static (long casualties, bool defeated) ExecuteRemotePlayerStrike(string targetName, int weaponIndex, long forcedCasualties)
         {
             if (!GameEngine.Nations.TryGetValue(targetName, out Nation target)) return (0, false);
 
-            double fraction = weaponIndex switch
-            {
-                0 => 0.10 + rng.NextDouble() * 0.20,
-                1 => 0.40 + rng.NextDouble() * 0.30,
-                2 => 0.35 + rng.NextDouble() * 0.30,
-                3 => 0.15,
-                _ => 0.10
-            };
-
-            long casualties = (long)(target.MaxPopulation * fraction);
-            casualties = Math.Min(casualties, target.Population);
+            long casualties = Math.Min(forcedCasualties, target.Population);
             target.Population -= casualties;
-            target.AngerLevel  = Math.Min(10, target.AngerLevel + rng.Next(1, 3));
+            target.AngerLevel = Math.Min(10, target.AngerLevel + rng.Next(1, 3));
+
+            if (weaponIndex == 3)
+            {
+                target.Nukes = Math.Max(0, target.Nukes - 5);
+                target.Money = (long)(target.Money * 0.5);
+            }
 
             if (target.Population <= 0) { target.IsDefeated = true; return (casualties, true); }
             return (casualties, false);

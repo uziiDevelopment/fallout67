@@ -1,5 +1,6 @@
 using System;
 using System.Windows.Forms;
+using Velopack;
 
 namespace fallover_67
 {
@@ -8,6 +9,8 @@ namespace fallover_67
         [STAThread]
         static void Main()
         {
+            VelopackApp.Build().Run();
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 

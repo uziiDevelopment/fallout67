@@ -126,6 +126,8 @@ namespace fallover_67
         private readonly Dictionary<MissileAnimation, string> _inboundMissiles = new Dictionary<MissileAnimation, string>();
         // Set of missiles the player intercepted in the minigame — their OnImpact becomes a dud
         private readonly HashSet<MissileAnimation> _interceptedMissiles = new HashSet<MissileAnimation>();
+        // Tracks pre-rolled damage for player-vs-player strikes (so Iron Dome pipeline can use them)
+        private readonly Dictionary<MissileAnimation, long> _forcedDamageMap = new Dictionary<MissileAnimation, long>();
         private bool _minigamesEnabled = true;
 
         // ── Multiplayer state ────────────────────────────────────────────────
@@ -154,8 +156,12 @@ namespace fallover_67
             _mpPlayers        = mpPlayers;
             _isMultiplayer    = true;
             _serverUrl        = serverUrl;
-            // In multiplayer, minigames would desync timing — disable regardless of setting
-            _minigamesEnabled = false;
+            // Iron Dome is local-only defense — damage is pre-rolled, so it won't desync
+            _minigamesEnabled = minigamesEnabled;
+
+            // Mark all human-controlled nations (both local player and remote players)
+            if (GameEngine.Nations.TryGetValue(GameEngine.Player.NationName, out var localNation))
+                localNation.IsHumanControlled = true;
 
             foreach (var p in mpPlayers)
                 if (p.Country != null && p.Id != mpClient.LocalPlayerId &&
@@ -253,7 +259,7 @@ namespace fallover_67
             if (_mpClient == null) return;
             _mpClient.OnGameAction += (senderId, action) => { if (InvokeRequired) Invoke(new Action(() => HandleRemoteAction(senderId, action))); else HandleRemoteAction(senderId, action); };
             _mpClient.OnChat += (senderId, name, text) => { if (InvokeRequired) Invoke(new Action(() => { logBox.SelectionColor = cyanText; LogMsg($"[COMMS] {name.ToUpper()}: {text}"); })); };
-            _mpClient.OnDisconnected += () => { if (InvokeRequired) Invoke(new Action(() => { logBox.SelectionColor = redText; LogMsg("[NETWORK] ⚠ Lost connection to multiplayer server."); })); };
+            _mpClient.OnDisconnected += () => { if (InvokeRequired) Invoke(new Action(() => { logBox.SelectionColor = redText; LogMsg("[NETWORK] âš  Lost connection to multiplayer server."); })); };
             logBox.SelectionColor = cyanText; LogMsg("[NETWORK] Multiplayer session active. Other commanders are online.");
         }
 
@@ -271,8 +277,10 @@ namespace fallover_67
                     string target = action.GetProperty("target").GetString() ?? "";
                     int weapon = action.GetProperty("weapon").GetInt32();
                     string nation = action.GetProperty("playerNation").GetString() ?? "";
+                    long strikeDmg = action.TryGetProperty("damage", out var dg) ? dg.GetInt64() : 0;
 
-                    if (!GameEngine.Nations.ContainsKey(target)) break;
+                    bool hitsMe = target == GameEngine.Player.NationName;
+                    if (!hitsMe && !GameEngine.Nations.ContainsKey(target)) break;
 
                     string[] wNames = { "STANDARD NUKE", "TSAR BOMBA", "BIO-PLAGUE", "ORBITAL LASER" };
                     Color[] wColors = { Color.OrangeRed, Color.DeepPink, Color.LimeGreen, Color.Cyan };
@@ -282,8 +290,9 @@ namespace fallover_67
                         ? new PointLatLng(attackerNation.MapY, attackerNation.MapX)
                         : new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX);
 
-                    Nation tgtNation = GameEngine.Nations[target];
-                    PointLatLng impactPt = new PointLatLng(tgtNation.MapY, tgtNation.MapX);
+                    PointLatLng impactPt = hitsMe
+                        ? new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX)
+                        : new PointLatLng(GameEngine.Nations[target].MapY, GameEngine.Nations[target].MapX);
 
                     float radius = weapon < wRadii.Length ? wRadii[weapon] : 45f;
                     Color mColor = weapon < wColors.Length ? wColors[weapon] : Color.OrangeRed;
@@ -291,27 +300,102 @@ namespace fallover_67
                     logBox.SelectionColor = amberText;
                     LogMsg($"[COMMANDER] {senderName.ToUpper()} launched {wNames[weapon]} at {target.ToUpper()}!");
 
-                    lock (_animLock) activeMissiles.Add(new MissileAnimation
+                    if (hitsMe)
                     {
-                        Start = startPt,
-                        End = impactPt,
-                        IsPlayerMissile = false,
-                        MissileColor = mColor,
-                        Speed = 0.4f,
-                        OnImpact = () => {
-                            var (cas, def) = CombatEngine.ExecuteRemotePlayerStrike(target, weapon);
-                            lock (_animLock) activeExplosions.Add(new ExplosionEffect { Center = impactPt, MaxRadius = radius, DamageLines = new[] { $"[{senderName.ToUpper()}] {cas:N0} casualties{(def ? " — DEFEATED" : "")}" }, IsPlayerTarget = false });
-                            logBox.SelectionColor = amberText; LogMsg($"[IMPACT] {target.ToUpper()} — {cas:N0} casualties from {senderName.ToUpper()}'s strike.{(def ? " NATION DEFEATED." : "")}");
-                            RefreshData();
+                        logBox.SelectionColor = redText;
+                        LogMsg($"[WARNING] âš  RADAR ALERT: {senderName.ToUpper()} HAS LAUNCHED AN ICBM AT YOU! BRACE FOR IMPACT! âš ");
+
+                        string capturedSender = senderName;
+                        long capturedDmg = strikeDmg;
+
+                        var missile = new MissileAnimation
+                        {
+                            Start = startPt,
+                            End = impactPt,
+                            IsPlayerMissile = false,
+                            MissileColor = Color.Red,
+                            Speed = 0.4f,
+                        };
+
+                        lock (_animLock)
+                        {
+                            _inboundMissiles[missile] = capturedSender;
+                            _forcedDamageMap[missile] = capturedDmg;
+                            activeMissiles.Add(missile);
                         }
-                    });
+
+                        missile.OnImpact = async () =>
+                        {
+                            bool wasIntercepted;
+                            long dmg;
+                            string sName;
+                            lock (_animLock)
+                            {
+                                _inboundMissiles.TryGetValue(missile, out sName);
+                                _forcedDamageMap.TryGetValue(missile, out dmg);
+                                wasIntercepted = _interceptedMissiles.Remove(missile);
+                                _inboundMissiles.Remove(missile);
+                                _forcedDamageMap.Remove(missile);
+                            }
+                            sName ??= capturedSender;
+                            if (dmg == 0) dmg = capturedDmg;
+
+                            if (wasIntercepted)
+                            {
+                                lock (_animLock) activeExplosions.Add(new ExplosionEffect
+                                {
+                                    Center = impactPt, MaxRadius = 30f,
+                                    DamageLines = new[] { $"âš¡ INTERCEPTED â€” {sName.ToUpper()}" },
+                                    IsPlayerTarget = false
+                                });
+                                logBox.SelectionColor = cyanText;
+                                LogMsg($"[IRON DOME] âš¡ Missile from {sName.ToUpper()} INTERCEPTED!");
+                                return;
+                            }
+
+                            var dmgLogs = CombatEngine.ApplyForcedEnemyStrike(dmg);
+                            lock (_animLock) activeExplosions.Add(new ExplosionEffect { Center = impactPt, MaxRadius = 55f, DamageLines = new[] { $"STRIKE FROM {sName.ToUpper()}", $"{dmg:N0} casualties" }, IsPlayerTarget = true });
+                            foreach (var l in dmgLogs) { logBox.SelectionColor = l.Contains("CATASTROPHE") || l.Contains("WARNING") ? redText : l.Contains("DEFENSE") ? cyanText : greenText; LogMsg(l); await Task.Delay(400); }
+                            RefreshData();
+                            CheckGameOver();
+                        };
+
+                        if (_minigamesEnabled && GameEngine.Player.IronDomeLevel > 0 && _gameState == GameState.Playing)
+                            _ = Task.Run(() => mapPanel.BeginInvoke(new Action(() => _ = TriggerIronDomeMinigame(impactPt))));
+                    }
+                    else
+                    {
+                        lock (_animLock) activeMissiles.Add(new MissileAnimation
+                        {
+                            Start = startPt,
+                            End = impactPt,
+                            IsPlayerMissile = false,
+                            MissileColor = mColor,
+                            Speed = 0.4f,
+                            OnImpact = async () =>
+                            {
+                                var (cas, def) = CombatEngine.ExecuteRemotePlayerStrike(target, weapon, strikeDmg);
+                                lock (_animLock) activeExplosions.Add(new ExplosionEffect { Center = impactPt, MaxRadius = radius, DamageLines = new[] { $"[{senderName.ToUpper()}] {cas:N0} casualties{(def ? " â€” DEFEATED" : "")}" }, IsPlayerTarget = false });
+                                logBox.SelectionColor = amberText; LogMsg($"[IMPACT] {target.ToUpper()} â€” {cas:N0} casualties from {senderName.ToUpper()}'s strike.{(def ? " NATION DEFEATED." : "")}");
+                                RefreshData();
+                            }
+                        });
+                    }
+                    break;
+
+                case "ai_launch":
+                    string aiAttacker = action.GetProperty("attacker").GetString() ?? "";
+                    string aiTarget = action.GetProperty("target").GetString() ?? "";
+                    int aiSalvo = action.GetProperty("salvo").GetInt32();
+                    long aiDamage = action.GetProperty("damage").GetInt64();
+                    TriggerAiLaunchLocal(aiAttacker, aiTarget, aiSalvo, aiDamage);
                     break;
             }
         }
 
         private void SetupUI()
         {
-            this.Text = $"VAULT-TEC LAUNCH CONTROL - {GameEngine.Player.NationName}";
+            this.Text = $"VAULT-TEC LAUNCH CONTROL V1.1.0 - {GameEngine.Player.NationName}";
             this.Size = new Size(1300, 830);
             this.BackColor = bgDark;
             this.StartPosition = FormStartPosition.CenterScreen;
@@ -388,7 +472,7 @@ namespace fallover_67
             grpPlayer.Controls.Add(btnLeaderboard);
             this.Controls.Add(grpPlayer);
 
-            GroupBox grpLogs = CreateBox("🔴 LIVE TACTICAL COMMENTARY", 10, 605, 1260, 185);
+            GroupBox grpLogs = CreateBox("ðŸ”´ LIVE TACTICAL COMMENTARY", 10, 605, 1260, 185);
             logBox = new RichTextBox { Location = new Point(10, 25), Size = new Size(1240, 150), BackColor = Color.Black, ForeColor = greenText, Font = new Font("Consolas", 14F, FontStyle.Bold), ReadOnly = true, BorderStyle = BorderStyle.None };
             grpLogs.Controls.Add(logBox);
             this.Controls.Add(grpLogs);
@@ -829,8 +913,10 @@ namespace fallover_67
                 else if (weaponIndex == 3) GameEngine.Player.OrbitalLasers--;
                 GameEngine.Player.NukesUsed++;
 
+                long preCalculatedDmg = CombatEngine.PreCalculatePlayerDamage(targetName, weaponIndex);
+
                 if (_isMultiplayer && _mpClient != null)
-                    _ = _mpClient.SendGameActionAsync(new { type = "strike", target = targetName, weapon = weaponIndex, playerNation = GameEngine.Player.NationName });
+                    _ = _mpClient.SendGameActionAsync(new { type = "strike", target = targetName, weapon = weaponIndex, playerNation = GameEngine.Player.NationName, damage = preCalculatedDmg });
 
                 // Slight spread so missiles don't perfectly overlap
                 float spread = salvo > 1 ? (s - salvo / 2f) * 0.3f : 0f;
@@ -843,7 +929,7 @@ namespace fallover_67
                     IsPlayerMissile = true,
                     MissileColor = wColors[weaponIndex],
                     Speed = 0.4f - (s * 0.01f), // slight stagger so they don't all land simultaneously
-                    OnImpact = async () => await HandlePlayerStrikeImpact(targetName, weaponIndex, adjustedImpact, rc)
+                    OnImpact = async () => await HandlePlayerStrikeImpact(targetName, weaponIndex, adjustedImpact, rc, preCalculatedDmg)
                 });
 
                 if (s < salvo - 1)
@@ -853,9 +939,9 @@ namespace fallover_67
             RefreshData();
         }
 
-        private async Task HandlePlayerStrikeImpact(string targetName, int weaponIndex, PointLatLng impactPos, float blastRadius)
+        private async Task HandlePlayerStrikeImpact(string targetName, int weaponIndex, PointLatLng impactPos, float blastRadius, long calculatedDmg)
         {
-            StrikeResult result = CombatEngine.ExecuteCombatTurn(targetName, weaponIndex);
+            StrikeResult result = CombatEngine.ExecuteCombatTurn(targetName, weaponIndex, calculatedDmg);
 
             string impactLine = result.Logs.FirstOrDefault(l => l.Contains("[IMPACT]")) ?? "";
             string resultLine = result.Logs.FirstOrDefault(l => l.Contains("SURRENDER") || l.Contains("VICTORY") || l.Contains("SUCCESS")) ?? "";
@@ -870,6 +956,7 @@ namespace fallover_67
             RefreshData();
             CheckGameOver();
 
+            // Broadcast the calculated results to everyone
             foreach (var (allyName, damage) in result.AllySupporters)
             {
                 if (GameEngine.Nations.TryGetValue(allyName, out Nation allyNation))
@@ -877,7 +964,7 @@ namespace fallover_67
                     await Task.Delay(350);
                     logBox.SelectionColor = cyanText;
                     LogMsg($"[ALLY SUPPORT] {allyName.ToUpper()} has launched supporting missiles at {targetName.ToUpper()}!");
-                    LaunchAllyMissile(allyNation, targetName, damage, impactPos);
+                    BroadcastAiLaunch(allyNation, targetName, 1, damage);
                 }
             }
 
@@ -886,7 +973,7 @@ namespace fallover_67
                 if (GameEngine.Nations.TryGetValue(retaliatorName, out Nation eNat))
                 {
                     await Task.Delay(600);
-                    LaunchEnemyMissile(eNat);
+                    BroadcastAiLaunch(eNat, GameEngine.Player.NationName, 1);
                 }
             }
         }
@@ -1033,7 +1120,44 @@ namespace fallover_67
         }
 
         // ── Country vs Country Wars ──────────────────────────────────────────────────
-        private void LaunchNationVsNationMissile(Nation attacker, Nation target)
+        private void BroadcastAiLaunch(Nation attacker, string targetName, int salvo, long? forcedDamage = null)
+        {
+            long damage = 0;
+            if (GameEngine.Nations.TryGetValue(targetName, out Nation target))
+            {
+                damage = forcedDamage ?? (long)(target.MaxPopulation * (0.04 + rng.NextDouble() * 0.14));
+            }
+
+            if (_isMultiplayer && _mpClient != null)
+            {
+                _ = _mpClient.SendGameActionAsync(new { 
+                    type = "ai_launch", 
+                    attacker = attacker.Name, 
+                    target = targetName, 
+                    salvo = salvo, 
+                    damage = damage 
+                });
+            }
+
+            TriggerAiLaunchLocal(attacker.Name, targetName, salvo, damage);
+        }
+
+        private void TriggerAiLaunchLocal(string attackerName, string targetName, int salvo, long damage)
+        {
+            if (!GameEngine.Nations.TryGetValue(attackerName, out Nation attacker)) return;
+
+            if (targetName == GameEngine.Player.NationName)
+            {
+                attacker.IsHostileToPlayer = true;
+                for (int s = 0; s < salvo; s++) LaunchEnemyMissile(attacker);
+            }
+            else if (GameEngine.Nations.TryGetValue(targetName, out Nation target))
+            {
+                for (int s = 0; s < salvo; s++) LaunchNationVsNationMissile(attacker, target, damage);
+            }
+        }
+
+        private void LaunchNationVsNationMissile(Nation attacker, Nation target, long damage)
         {
             bool allyUnderAttack = GameEngine.Player.Allies.Contains(target.Name);
 
@@ -1051,16 +1175,15 @@ namespace fallover_67
                 IsPlayerMissile = false,
                 MissileColor = Color.Orange,
                 Speed = 0.4f,
-                OnImpact = async () => await HandleNationVsNationImpact(attacker.Name, target.Name, impactPt, allyUnderAttack)
+                OnImpact = async () => await HandleNationVsNationImpact(attacker.Name, target.Name, impactPt, allyUnderAttack, damage)
             });
         }
 
-        private async Task HandleNationVsNationImpact(string attackerName, string targetName, PointLatLng impactPos, bool allyUnderAttack)
+        private async Task HandleNationVsNationImpact(string attackerName, string targetName, PointLatLng impactPos, bool allyUnderAttack, long damage)
         {
             if (!GameEngine.Nations.TryGetValue(attackerName, out Nation attacker)) return;
             if (!GameEngine.Nations.TryGetValue(targetName, out Nation target)) return;
 
-            long damage = (long)(target.MaxPopulation * (0.04 + rng.NextDouble() * 0.14));
             damage = Math.Min(damage, target.Population);
             target.Population -= damage;
             target.AngerLevel = Math.Min(10, target.AngerLevel + 1);
@@ -1085,37 +1208,40 @@ namespace fallover_67
 
             RefreshData();
 
-            if (!target.IsDefeated && target.Nukes > 0 && rng.NextDouble() < 0.65)
+            if (!_isMultiplayer || (_mpClient != null && _mpClient.IsHost))
             {
-                await Task.Delay(900);
-                if (!target.IsDefeated && !attacker.IsDefeated) LaunchNationVsNationMissile(target, attacker);
-            }
-
-            foreach (string allyName in target.Allies)
-            {
-                if (!GameEngine.Nations.TryGetValue(allyName, out Nation targetAlly)) continue;
-                if (targetAlly.IsDefeated || targetAlly.Nukes <= 0 || rng.NextDouble() >= 0.45) continue;
-
-                await Task.Delay(700 + rng.Next(500));
-                if (!targetAlly.IsDefeated && !attacker.IsDefeated)
+                if (!target.IsDefeated && !target.IsHumanControlled && target.Nukes > 0 && rng.NextDouble() < 0.65)
                 {
-                    logBox.SelectionColor = allyUnderAttack ? redText : amberText;
-                    LogMsg($"[ALLIANCE] {allyName.ToUpper()} enters the war defending {targetName.ToUpper()}!");
-                    LaunchNationVsNationMissile(targetAlly, attacker);
+                    await Task.Delay(900);
+                    if (!target.IsDefeated && !attacker.IsDefeated) BroadcastAiLaunch(target, attacker.Name, 1);
                 }
-            }
 
-            foreach (string allyName in attacker.Allies)
-            {
-                if (!GameEngine.Nations.TryGetValue(allyName, out Nation attackerAlly)) continue;
-                if (attackerAlly.IsDefeated || attackerAlly.Nukes <= 0 || rng.NextDouble() >= 0.30) continue;
-
-                await Task.Delay(700 + rng.Next(500));
-                if (!attackerAlly.IsDefeated && !target.IsDefeated)
+                foreach (string allyName in target.Allies)
                 {
-                    logBox.SelectionColor = amberText;
-                    LogMsg($"[ALLIANCE] {allyName.ToUpper()} joins {attackerName.ToUpper()}'s offensive against {targetName.ToUpper()}!");
-                    LaunchNationVsNationMissile(attackerAlly, target);
+                    if (!GameEngine.Nations.TryGetValue(allyName, out Nation targetAlly)) continue;
+                    if (targetAlly.IsDefeated || targetAlly.IsHumanControlled || targetAlly.Nukes <= 0 || rng.NextDouble() >= 0.45) continue;
+
+                    await Task.Delay(700 + rng.Next(500));
+                    if (!targetAlly.IsDefeated && !attacker.IsDefeated)
+                    {
+                        logBox.SelectionColor = allyUnderAttack ? redText : amberText;
+                        LogMsg($"[ALLIANCE] {allyName.ToUpper()} enters the war defending {targetName.ToUpper()}!");
+                        BroadcastAiLaunch(targetAlly, attacker.Name, 1);
+                    }
+                }
+
+                foreach (string allyName in attacker.Allies)
+                {
+                    if (!GameEngine.Nations.TryGetValue(allyName, out Nation attackerAlly)) continue;
+                    if (attackerAlly.IsDefeated || attackerAlly.IsHumanControlled || attackerAlly.Nukes <= 0 || rng.NextDouble() >= 0.30) continue;
+
+                    await Task.Delay(700 + rng.Next(500));
+                    if (!attackerAlly.IsDefeated && !target.IsDefeated)
+                    {
+                        logBox.SelectionColor = amberText;
+                        LogMsg($"[ALLIANCE] {allyName.ToUpper()} joins {attackerName.ToUpper()}'s offensive against {targetName.ToUpper()}!");
+                        BroadcastAiLaunch(attackerAlly, target.Name, 1);
+                    }
                 }
             }
 
@@ -1153,7 +1279,7 @@ namespace fallover_67
                     if (rng.NextDouble() < 0.12 + a.Difficulty * 0.04)
                     {
                         int salvo = Math.Min(1 + rng.Next(0, a.AngerLevel / 3 + 1), a.Nukes);
-                        for (int s = 0; s < salvo; s++) LaunchEnemyMissile(a);
+                        BroadcastAiLaunch(a, GameEngine.Player.NationName, salvo);
                         break;
                     }
                 }
@@ -1163,13 +1289,17 @@ namespace fallover_67
             if (worldWarTick >= 18)
             {
                 worldWarTick = 0;
+                
+                // ONLY THE HOST DECIDES UNPROVOKED WORLD WARS IN MULTIPLAYER
+                if (_isMultiplayer && _mpClient != null && !_mpClient.IsHost) return;
+                
                 if (rng.NextDouble() > 0.30) return;
 
                 var attackers = GameEngine.Nations.Values.Where(n => !n.IsDefeated && n.Nukes > 0 && !n.IsHumanControlled).ToList();
                 if (attackers.Count == 0) return;
 
                 Nation attacker = attackers[rng.Next(attackers.Count)];
-                var targetPool = GameEngine.Nations.Values.Where(n => !n.IsDefeated && n.Name != attacker.Name && !attacker.Allies.Contains(n.Name)).ToList();
+                var targetPool = GameEngine.Nations.Values.Where(n => !n.IsDefeated && n.Name != attacker.Name && !attacker.Allies.Contains(n.Name) && !n.IsHumanControlled).ToList();
 
                 bool canHitPlayer = !GameEngine.Player.Allies.Contains(attacker.Name);
                 if (targetPool.Count == 0 && !canHitPlayer) return;
@@ -1185,11 +1315,11 @@ namespace fallover_67
                     if (hitPlayer)
                     {
                         attacker.IsHostileToPlayer = true;
-                        LaunchEnemyMissile(attacker);
+                        BroadcastAiLaunch(attacker, GameEngine.Player.NationName, 1);
                     }
                     else if (nvnTarget != null)
                     {
-                        LaunchNationVsNationMissile(attacker, nvnTarget);
+                        BroadcastAiLaunch(attacker, nvnTarget.Name, 1);
                     }
                 }
             }

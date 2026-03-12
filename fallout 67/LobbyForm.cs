@@ -4,6 +4,8 @@ using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Velopack;
+using Velopack.Sources;
 
 namespace fallover_67
 {
@@ -52,6 +54,48 @@ namespace fallover_67
             this.MaximizeBox     = false;
 
             BuildUI();
+            this.Shown += async (s, e) => await CheckForUpdatesAsync();
+        }
+
+        // ── Auto-update via Velopack ─────────────────────────────────────────
+        private async Task CheckForUpdatesAsync()
+        {
+            try
+            {
+                var mgr = new UpdateManager(
+                    new GithubSource("https://github.com/uziiDevelopment/fallout67", null, false));
+
+                if (!mgr.IsInstalled)
+                {
+                    // App was not installed via Velopack Setup — auto-update unavailable
+                    return;
+                }
+
+                var currentVersion = mgr.CurrentVersion;
+                this.Text = $"VAULT-TEC LAUNCH CONTROL — NETWORK TERMINAL  (v{currentVersion})";
+
+                var newVersion = await mgr.CheckForUpdatesAsync();
+                if (newVersion == null) return;
+
+                var result = MessageBox.Show(
+                    $"A new version ({newVersion.TargetFullRelease.Version}) is available.\nYou are currently on v{currentVersion}.\n\nDownload and install now?",
+                    "VAULT-TEC UPDATE AVAILABLE",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+
+                if (result == DialogResult.Yes)
+                {
+                    await mgr.DownloadUpdatesAsync(newVersion);
+                    mgr.ApplyUpdatesAndRestart(newVersion);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Velopack] Update check failed: {ex}");
+                MessageBox.Show(
+                    $"Auto-update check failed:\n{ex.Message}",
+                    "Update Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         // ── UI construction ──────────────────────────────────────────────────
