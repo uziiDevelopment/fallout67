@@ -2,11 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Prerequisites
+
+- **.NET 8.0+** (for C# game)
+- **Node.js 18+** and **npm** (for Cloudflare Worker server)
+- **Visual Studio, Visual Studio Code, or similar** (for C# development)
+- **Cloudflare account** (required to deploy the Worker; local dev with `wrangler dev` requires no account)
+
 ## Project Overview
 
 **Fallout 67** is a Windows Forms turn-based nuclear strategy game in C# (.NET 8.0). Players select one of 28 nations and launch weapons at rivals while managing defenses and alliances.
 
 ## Build & Run
+
+### C# Game
 
 ```bash
 # Build
@@ -18,7 +27,27 @@ dotnet run --project "fallout 67/fallout 67.csproj"
 
 Compiled executable: `fallout 67/bin/Debug/net8.0-windows/fallout 67.exe`
 
-No test project exists.
+No unit test project exists for the C# game.
+
+### Cloudflare Worker (Server)
+
+```bash
+# Development (from server/ directory)
+cd server
+npm install
+npm run dev
+
+# Deploy to Cloudflare (from server/ directory)
+npm run deploy
+
+# Generate TypeScript bindings after updating wrangler.jsonc
+npm run cf-typegen
+
+# Run tests
+npm test
+```
+
+See `server/AGENTS.md` for detailed Cloudflare Workers documentation and API limits.
 
 ## Architecture
 
@@ -37,10 +66,10 @@ No test project exists.
 
 `Form1.cs` / `Form1.Designer.cs` are unused scaffolding.
 
-### Cloudflare Worker (fallout67/)
+### Cloudflare Worker (server/)
 
-Single Durable Object (`GameRoom`) per room code. Deploy with `npm run deploy` from `fallout67/`.
-After updating `wrangler.jsonc`, run `npm run cf-typegen` to regenerate `Env` types.
+Single Durable Object (`GameRoom`) per room code. Located in `server/src/index.ts`.
+After updating `server/wrangler.jsonc`, run `npm run cf-typegen` to regenerate `Env` types.
 
 | Endpoint | Purpose |
 |---|---|
@@ -55,15 +84,17 @@ The server only **relays** `game_action` messages; each client runs the game sim
 ### Game Loop
 
 Three timers drive the game inside `ControlPanelForm`:
-- **Game timer (1000ms):** AI turns, world events, mission countdowns
+- **Game timer (1000ms):** AI turns, world events, mission countdowns (in single-player only; multiplayer is turn-based via WebSocket)
 - **Radar timer (30ms):** Rotating radar sweep animation
 - **Animation timer (16ms):** Missile Bézier curves and explosion effects
+
+In **multiplayer**, game actions are relayed through the server, but all clients run the same deterministic simulation locally using the shared random seed from `game_start`.
 
 The world map image is downloaded at runtime from an external URL (`postimg.cc`).
 
 ### Namespace Note
 
-The root namespace in code is `fallover_67` (typo vs. `fallout_67` in the csproj). Both spellings appear — don't "fix" one without updating the other.
+The root namespace in code is `fallover_67` (intentional, different from `fallout_67` in the csproj). Both spellings appear throughout the codebase — do not "fix" one without updating the other.
 
 ## Key Mechanics
 

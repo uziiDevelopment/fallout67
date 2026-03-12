@@ -89,34 +89,39 @@ namespace fallover_67
             // Calibrated X and Y coordinates for the provided map
             var rawNations = new List<Nation>
             {
-                new Nation("USA", 330_000_000, 35, 5, 12000, 0.18f, 0.35f),
-                new Nation("Canada", 39_000_000, 6, 2, 2500, 0.20f, 0.22f),
-                new Nation("Mexico", 128_000_000, 0, 2, 1500, 0.17f, 0.44f),
-                new Nation("Cuba", 11_000_000, 2, 1, 500, 0.24f, 0.46f),
-                new Nation("Brazil", 214_000_000, 0, 2, 2000, 0.32f, 0.65f),
-                new Nation("Argentina", 45_000_000, 0, 1, 1000, 0.28f, 0.82f),
-                new Nation("UK", 69_000_000, 12, 3, 4500, 0.465f, 0.26f),
-                new Nation("France", 66_000_000, 10, 3, 4000, 0.48f, 0.31f),
-                new Nation("Germany", 84_000_000, 15, 4, 6000, 0.51f, 0.29f),
-                new Nation("Italy", 59_000_000, 0, 3, 4000, 0.52f, 0.34f),
-                new Nation("Spain", 47_000_000, 0, 3, 3000, 0.46f, 0.35f),
-                new Nation("Ukraine", 43_000_000, 0, 2, 1000, 0.57f, 0.28f),
-                new Nation("Russia", 144_000_000, 30, 5, 8000, 0.68f, 0.20f),
-                new Nation("Turkey", 84_000_000, 2, 3, 2500, 0.57f, 0.35f),
-                new Nation("Israel", 9_000_000, 20, 4, 2000, 0.56f, 0.40f),
-                new Nation("Egypt", 104_000_000, 0, 2, 1000, 0.55f, 0.43f),
-                new Nation("Nigeria", 211_000_000, 0, 2, 1500, 0.50f, 0.55f),
-                new Nation("South Africa", 60_000_000, 2, 2, 1200, 0.55f, 0.76f),
-                new Nation("Saudi Arabia", 35_000_000, 0, 3, 5000, 0.60f, 0.46f),
-                new Nation("Iran", 85_000_000, 5, 3, 2000, 0.63f, 0.40f),
-                new Nation("Pakistan", 225_000_000, 15, 3, 1500, 0.66f, 0.43f),
-                new Nation("India", 1_450_000_000, 18, 4, 3000, 0.69f, 0.47f),
-                new Nation("China", 1_419_000_000, 35, 5, 10000, 0.76f, 0.41f),
-                new Nation("Japan", 125_000_000, 0, 4, 6000, 0.86f, 0.35f),
-                new Nation("South Korea", 51_000_000, 0, 4, 5000, 0.83f, 0.36f),
-                new Nation("North Korea", 26_000_000, 15, 3, 500, 0.82f, 0.34f),
-                new Nation("Indonesia", 273_000_000, 0, 3, 3000, 0.80f, 0.62f),
-                new Nation("Australia", 26_000_000, 4, 1, 1000, 0.85f, 0.75f)
+                new Nation("USA",          330_000_000,   35, 5, 12000, 0.175f, 0.340f),
+                new Nation("Canada",        39_000_000,    6, 2,  2500, 0.190f, 0.200f),
+                new Nation("Mexico",       128_000_000,    0, 2,  1500, 0.160f, 0.450f),
+                new Nation("Cuba",          11_000_000,    2, 1,   500, 0.235f, 0.465f),
+                new Nation("Brazil",       214_000_000,    0, 2,  2000, 0.310f, 0.660f),
+                new Nation("Argentina",     45_000_000,    0, 1,  1000, 0.270f, 0.830f),
+                // Europe — spread horizontally and vertically to avoid cluster
+                new Nation("UK",            69_000_000,   12, 3,  4500, 0.440f, 0.210f),
+                new Nation("Spain",         47_000_000,    0, 3,  3000, 0.435f, 0.320f),
+                new Nation("France",        66_000_000,   10, 3,  4000, 0.470f, 0.290f),
+                new Nation("Germany",       84_000_000,   15, 4,  6000, 0.510f, 0.240f),
+                new Nation("Italy",         59_000_000,    0, 3,  4000, 0.520f, 0.325f),
+                new Nation("Ukraine",       43_000_000,    0, 2,  1000, 0.580f, 0.250f),
+                new Nation("Russia",       144_000_000,   30, 5,  8000, 0.690f, 0.175f),
+                // Middle East
+                new Nation("Turkey",        84_000_000,    2, 3,  2500, 0.575f, 0.330f),
+                new Nation("Israel",         9_000_000,   20, 4,  2000, 0.562f, 0.400f),
+                new Nation("Egypt",        104_000_000,    0, 2,  1000, 0.548f, 0.435f),
+                new Nation("Saudi Arabia",  35_000_000,    0, 3,  5000, 0.610f, 0.455f),
+                new Nation("Iran",          85_000_000,    5, 3,  2000, 0.638f, 0.385f),
+                // Africa
+                new Nation("Nigeria",      211_000_000,    0, 2,  1500, 0.495f, 0.555f),
+                new Nation("South Africa",  60_000_000,    2, 2,  1200, 0.545f, 0.770f),
+                // South / Central Asia
+                new Nation("Pakistan",     225_000_000,   15, 3,  1500, 0.655f, 0.430f),
+                new Nation("India",      1_450_000_000,   18, 4,  3000, 0.685f, 0.470f),
+                // East Asia — Korea separated clearly
+                new Nation("China",      1_419_000_000,   35, 5, 10000, 0.760f, 0.390f),
+                new Nation("North Korea",   26_000_000,   15, 3,   500, 0.815f, 0.305f),
+                new Nation("South Korea",   51_000_000,    0, 4,  5000, 0.840f, 0.355f),
+                new Nation("Japan",        125_000_000,    0, 4,  6000, 0.875f, 0.325f),
+                new Nation("Indonesia",    273_000_000,    0, 3,  3000, 0.800f, 0.610f),
+                new Nation("Australia",     26_000_000,    4, 1,  1000, 0.855f, 0.750f)
             };
 
             foreach (var n in rawNations) Nations.Add(n.Name, n);

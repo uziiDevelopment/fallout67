@@ -31,7 +31,7 @@ namespace fallover_67
 
     public class RadarPanel : Panel
     {
-        public RadarPanel() { this.DoubleBuffered = true; }
+        public RadarPanel() { this.DoubleBuffered = true; this.SetStyle(ControlStyles.Selectable, true); }
     }
 
     public class ControlPanelForm : Form
@@ -67,6 +67,13 @@ namespace fallover_67
         private MultiplayerClient? _mpClient;
         private List<MpPlayer>     _mpPlayers = new();
         private bool               _isMultiplayer = false;
+
+        // ── Map zoom / pan ───────────────────────────────────────────────────
+        private float  _zoom             = 1.0f;
+        private PointF _panOffset        = PointF.Empty;
+        private bool   _isPanning        = false;
+        private Point  _panStart;
+        private PointF _panOffsetAtStart;
 
         // Separate counters for two world-event categories
         private int playerAttackTick = 0;   // hostile nations → player
@@ -228,10 +235,12 @@ namespace fallover_67
                         byte[] imageBytes = wc.DownloadData("https://i.postimg.cc/tJxj6Kr9/map.png");
                         using (var ms = new System.IO.MemoryStream(imageBytes))
                         {
-                            worldMapImage = Image.FromStream(ms);
-                            if (mapPanel.IsHandleCreated)
-                                mapPanel.Invoke(new Action(() => mapPanel.Invalidate()));
+                            // new Bitmap() forces all pixel data into memory immediately,
+                            // so the stream can be safely disposed without breaking GDI+ transforms.
+                            worldMapImage = new Bitmap(ms);
                         }
+                        if (mapPanel.IsHandleCreated)
+                            mapPanel.Invoke(new Action(() => mapPanel.Invalidate()));
                     }
                 }
                 catch
@@ -251,9 +260,14 @@ namespace fallover_67
 
             GroupBox grpMap = CreateBox("GLOBAL TARGETING SATELLITE", 10, 10, 800, 450);
             mapPanel = new RadarPanel { Location = new Point(10, 25), Size = new Size(780, 415), BackColor = radarBg, Cursor = Cursors.Cross };
-            mapPanel.Paint += MapPanel_Paint;
-            mapPanel.MouseClick += MapPanel_MouseClick;
-            mapPanel.MouseMove += MapPanel_MouseMove;
+            mapPanel.Paint        += MapPanel_Paint;
+            mapPanel.MouseClick   += MapPanel_MouseClick;
+            mapPanel.MouseMove    += MapPanel_MouseMove;
+            mapPanel.MouseDown    += MapPanel_MouseDown;
+            mapPanel.MouseUp      += MapPanel_MouseUp;
+            mapPanel.MouseWheel   += MapPanel_MouseWheel;
+            mapPanel.DoubleClick  += (s, e) => ResetView();
+            mapPanel.MouseEnter   += (s, e) => mapPanel.Focus(); // needed for scroll wheel to fire
             grpMap.Controls.Add(mapPanel);
             this.Controls.Add(grpMap);
 
@@ -317,6 +331,10 @@ namespace fallover_67
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int w = mapPanel.Width, h = mapPanel.Height;
 
+            // Apply zoom + pan — all world-space drawing below is automatically transformed
+            g.TranslateTransform(_panOffset.X, _panOffset.Y);
+            g.ScaleTransform(_zoom, _zoom);
+
             if (worldMapImage != null) g.DrawImage(worldMapImage, 0, 0, w, h);
 
             // Alliance lines
@@ -361,23 +379,29 @@ namespace fallover_67
                 g.DrawString(mpLabel, nodeFont, new SolidBrush(mc), mx + 12, my - 8);
             }
 
-            // Nation nodes
+            // Nation nodes — labels only when zoomed in enough to read them
+            bool showLabels = _zoom >= 1.1f;
             foreach (var kvp in GameEngine.Nations)
             {
                 Nation n = kvp.Value;
                 float x = w * n.MapX, y = h * n.MapY;
 
                 Color nc = Color.LimeGreen;
-                if (n.IsDefeated)                               nc = Color.Gray;
+                if (n.IsDefeated)                                   nc = Color.Gray;
                 else if (GameEngine.Player.Allies.Contains(n.Name)) nc = cyanText;
-                else if (n.IsHostileToPlayer)                   nc = redText;
-                if (n.Name == hoveredTarget) nc = Color.White;
+                else if (n.IsHostileToPlayer)                       nc = redText;
+                if (n.Name == hoveredTarget || n.Name == selectedTarget) nc = Color.White;
 
-                g.FillEllipse(new SolidBrush(nc), x - 6, y - 6, 12, 12);
+                // Node dot — slightly larger for hovered/selected
+                float r = (n.Name == hoveredTarget || n.Name == selectedTarget) ? 8f : 6f;
+                g.FillEllipse(new SolidBrush(nc), x - r, y - r, r * 2, r * 2);
 
-                SizeF ts = g.MeasureString(n.Name.ToUpper(), nodeFont);
-                g.FillRectangle(new SolidBrush(Color.FromArgb(200, 0, 0, 0)), x + 8, y - 8, ts.Width, ts.Height);
-                g.DrawString(n.Name.ToUpper(), nodeFont, new SolidBrush(nc), x + 8, y - 8);
+                if (showLabels || n.Name == hoveredTarget || n.Name == selectedTarget)
+                {
+                    SizeF ts = g.MeasureString(n.Name.ToUpper(), nodeFont);
+                    g.FillRectangle(new SolidBrush(Color.FromArgb(200, 0, 0, 0)), x + 9, y - 8, ts.Width, ts.Height);
+                    g.DrawString(n.Name.ToUpper(), nodeFont, new SolidBrush(nc), x + 9, y - 8);
+                }
 
                 if (n.Name == selectedTarget)
                 {
@@ -467,6 +491,14 @@ namespace fallover_67
             float ex = cx + (float)(Math.Cos(radarAngle * Math.PI / 180) * rr);
             float ey = cy + (float)(Math.Sin(radarAngle * Math.PI / 180) * rr);
             g.DrawLine(new Pen(Color.FromArgb(120, 57, 255, 20), 2), cx, cy, ex, ey);
+
+            // Hint overlay — drawn in screen space so it stays fixed regardless of zoom/pan
+            g.ResetTransform();
+            string hint = $"Scroll: zoom ({_zoom:F1}x)  │  Right-drag: pan  │  Double-click: reset";
+            using var hf = new Font("Consolas", 8F);
+            SizeF hs = g.MeasureString(hint, hf);
+            g.FillRectangle(new SolidBrush(Color.FromArgb(140, 0, 0, 0)), 4, mapPanel.Height - hs.Height - 4, hs.Width + 4, hs.Height + 2);
+            g.DrawString(hint, hf, new SolidBrush(Color.FromArgb(160, 57, 255, 20)), 6, mapPanel.Height - hs.Height - 3);
         }
 
         // ── Animation Timer ─────────────────────────────────────────────────────────
@@ -502,20 +534,71 @@ namespace fallover_67
         }
 
         // ── Mouse Events ────────────────────────────────────────────────────────────
+        private PointF ScreenToWorld(float sx, float sy) =>
+            new PointF((sx - _panOffset.X) / _zoom, (sy - _panOffset.Y) / _zoom);
+
         private void MapPanel_MouseMove(object sender, MouseEventArgs e)
         {
+            if (_isPanning)
+            {
+                _panOffset = new PointF(
+                    _panOffsetAtStart.X + (e.X - _panStart.X),
+                    _panOffsetAtStart.Y + (e.Y - _panStart.Y));
+                mapPanel.Invalidate();
+                return;
+            }
+
             int w = mapPanel.Width, h = mapPanel.Height;
+            PointF world = ScreenToWorld(e.X, e.Y);
+            // Hit radius scales with zoom so small targets stay clickable when zoomed out
+            float hitRadius = 14f / _zoom;
             hoveredTarget = "";
             foreach (var n in GameEngine.Nations.Values)
             {
-                float dx = e.X - (w * n.MapX), dy = e.Y - (h * n.MapY);
-                if (Math.Sqrt(dx * dx + dy * dy) < 15) { hoveredTarget = n.Name; break; }
+                float dx = world.X - w * n.MapX, dy = world.Y - h * n.MapY;
+                if (dx * dx + dy * dy < hitRadius * hitRadius) { hoveredTarget = n.Name; break; }
             }
         }
 
         private void MapPanel_MouseClick(object sender, MouseEventArgs e)
         {
-            if (hoveredTarget != "") { selectedTarget = hoveredTarget; UpdateProfile(); }
+            if (e.Button == MouseButtons.Left && hoveredTarget != "")
+            { selectedTarget = hoveredTarget; UpdateProfile(); }
+        }
+
+        private void MapPanel_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Right || e.Button == MouseButtons.Middle)
+            {
+                _isPanning        = true;
+                _panStart         = e.Location;
+                _panOffsetAtStart = _panOffset;
+                mapPanel.Cursor   = Cursors.SizeAll;
+            }
+        }
+
+        private void MapPanel_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (_isPanning) { _isPanning = false; mapPanel.Cursor = Cursors.Cross; }
+        }
+
+        private void MapPanel_MouseWheel(object sender, MouseEventArgs e)
+        {
+            float factor  = e.Delta > 0 ? 1.18f : 1f / 1.18f;
+            float newZoom = Math.Clamp(_zoom * factor, 0.4f, 6.0f);
+            // Keep the point under the cursor stationary
+            _panOffset = new PointF(
+                e.X - (e.X - _panOffset.X) * (newZoom / _zoom),
+                e.Y - (e.Y - _panOffset.Y) * (newZoom / _zoom));
+            _zoom = newZoom;
+            mapPanel.Invalidate();
+        }
+
+        private void ResetView()
+        {
+            _zoom      = 1.0f;
+            _panOffset = PointF.Empty;
+            mapPanel.Invalidate();
         }
 
         // ── UI Update ───────────────────────────────────────────────────────────────
