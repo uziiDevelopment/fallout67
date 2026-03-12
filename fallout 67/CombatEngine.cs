@@ -104,8 +104,9 @@ namespace fallover_67
             }
         }
 
-        // Called when any enemy missile (retaliation or random) reaches the player's bunker
-        public static List<string> ExecuteEnemyStrike(string attackerName)
+        // Called when any enemy missile (retaliation or random) reaches the player's bunker.
+        // domeBlockFraction: 0..1 override from the Iron Dome minigame; -1 = use passive dome roll.
+        public static List<string> ExecuteEnemyStrike(string attackerName, double domeBlockFraction = -1)
         {
             var log = new List<string>();
             if (!GameEngine.Nations.TryGetValue(attackerName, out Nation attacker)) return log;
@@ -113,21 +114,34 @@ namespace fallover_67
 
             attacker.Nukes--;
             log.Add($"[CATASTROPHE] ⚠ DIRECT HIT FROM {attackerName.ToUpper()} ⚠");
-            TakePlayerDamage(attacker.Difficulty, attackerName, log);
+            TakePlayerDamage(attacker.Difficulty, attackerName, log, domeBlockFraction);
             return log;
         }
 
-        private static void TakePlayerDamage(int difficulty, string attackerName, List<string> log)
+        private static void TakePlayerDamage(int difficulty, string attackerName, List<string> log, double domeBlockFraction = -1)
         {
             long dmg = rng.Next(1_000_000, 4_000_000) * difficulty;
 
             if (GameEngine.Player.IronDomeLevel > 0)
             {
-                double domeBlock = 0.15 * GameEngine.Player.IronDomeLevel;
-                if (domeBlock > 0.6) domeBlock = 0.6;
+                double domeBlock;
+                if (domeBlockFraction >= 0)
+                {
+                    // Minigame result: fraction of missiles intercepted, scaled by dome level cap
+                    double cap = Math.Min(0.6, 0.15 * GameEngine.Player.IronDomeLevel);
+                    domeBlock = domeBlockFraction * cap;
+                    log.Add($"[DEFENSE] Iron Dome intercepted {domeBlockFraction * 100:F0}% of incoming missiles!");
+                }
+                else
+                {
+                    // Passive roll (no dome level, or minigame skipped)
+                    domeBlock = 0.15 * GameEngine.Player.IronDomeLevel;
+                    if (domeBlock > 0.6) domeBlock = 0.6;
+                    log.Add($"[DEFENSE] Iron Dome intercepted a portion of the blast!");
+                }
                 long blocked = (long)(dmg * domeBlock);
                 dmg -= blocked;
-                log.Add($"[DEFENSE] Iron Dome intercepted a portion of the blast! (Saved {blocked:N0} citizens)");
+                if (blocked > 0) log.Add($"[DEFENSE] Iron Dome saved {blocked:N0} citizens.");
             }
 
             if (GameEngine.Player.BunkerLevel > 0)

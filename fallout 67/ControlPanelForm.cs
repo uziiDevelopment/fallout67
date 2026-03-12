@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using GMap.NET;
@@ -31,14 +32,21 @@ namespace fallover_67
         public float MaxRadius { get; set; } = 45f;
         public string[] DamageLines { get; set; } = Array.Empty<string>();
         public bool IsPlayerTarget { get; set; }
+        public SizeF[]? CachedLineSizes { get; set; }
     }
 
     public class RadarPanel : GMapControl
     {
         public RadarPanel()
         {
-            this.DoubleBuffered = true;
-            this.SetStyle(ControlStyles.Selectable, true);
+            this.SetStyle(
+                ControlStyles.DoubleBuffer |
+                ControlStyles.UserPaint |
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.Selectable,
+                true);
+            this.UpdateStyles();
         }
     }
 
@@ -57,9 +65,15 @@ namespace fallover_67
         private ComboBox cmbWeapon;
         private Button btnLaunch, btnSendTroops, btnOpenShop;
         private RichTextBox logBox;
+        private TrackBar sliderSalvo;
+        private Label lblSalvo;
 
         private System.Windows.Forms.Timer gameTimer;
-        private Stopwatch _frameStopwatch = new Stopwatch();
+
+        // ── Render thread ─────────────────────────────────────────────────────
+        private Thread? _renderThread;
+        private volatile bool _renderRunning = true;
+        private readonly object _animLock = new object();
 
         private float radarAngle = 0;
         private string selectedTarget = "";
@@ -72,25 +86,76 @@ namespace fallover_67
         private List<ExplosionEffect> activeExplosions = new List<ExplosionEffect>();
         private static Random rng = new Random();
 
+        // ── Cached GDI+ objects (created once, disposed on form close) ────────
+        private Pen _gridPen = new Pen(Color.FromArgb(20, 0, 255, 0), 1);
+        private SolidBrush _tintBrush = new SolidBrush(Color.FromArgb(100, 5, 25, 5));
+        private Pen _allyPen = new Pen(Color.FromArgb(120, Color.Cyan), 1.5f);
+        private Pen _enAllyPen = new Pen(Color.FromArgb(50, Color.LimeGreen), 1f) { DashStyle = DashStyle.Dash };
+        private Font _nodeFont = new Font("Consolas", 8F, FontStyle.Bold);
+        private Font _explosionFont = new Font("Consolas", 8f, FontStyle.Bold);
+        private Font _hintFont = new Font("Consolas", 8F);
+        private SolidBrush _textBgBrush = new SolidBrush(Color.FromArgb(220, 0, 0, 0));
+        private SolidBrush _textFgBrush = new SolidBrush(Color.White);
+        private SolidBrush _nodeBrush = new SolidBrush(Color.LimeGreen);
+        private Pen _selectPen = new Pen(Color.Yellow, 2);
+        private Pen _radarPen = new Pen(Color.FromArgb(80, 57, 255, 20), 2);
+        private SolidBrush _hintBgBrush = new SolidBrush(Color.FromArgb(140, 0, 0, 0));
+        private SolidBrush _hintFgBrush = new SolidBrush(Color.FromArgb(160, 57, 255, 20));
+        private Pen _trailPen = new Pen(Color.White, 2.5f);
+        private SolidBrush _glowBrush = new SolidBrush(Color.White);
+        private SolidBrush _headBrush = new SolidBrush(Color.White);
+        private SolidBrush _expFillBrush = new SolidBrush(Color.White);
+        private Pen _expRingPen = new Pen(Color.White, 2.5f);
+        private SolidBrush _expTextBgBrush = new SolidBrush(Color.Black);
+        private SolidBrush _expTextFgBrush = new SolidBrush(Color.White);
+
+        // ── Pre-allocated trail point arrays (zero-alloc per frame) ───────────
+        private const int TrailSteps = 40;
+        private PointF[][] _trailArrays;
+
+        // ── Cached hint MeasureString ─────────────────────────────────────────
+        private string _cachedHintText = "";
+        private SizeF _cachedHintSize;
+
+        // ── Game state machine ───────────────────────────────────────────────
+        private enum GameState { Playing, IronDomeMinigame }
+        private volatile GameState _gameState = GameState.Playing;
+
+        // Tracks every enemy missile currently in flight toward the player
+        // Key = missile object, Value = attacker name
+        private readonly Dictionary<MissileAnimation, string> _inboundMissiles = new Dictionary<MissileAnimation, string>();
+        // Set of missiles the player intercepted in the minigame — their OnImpact becomes a dud
+        private readonly HashSet<MissileAnimation> _interceptedMissiles = new HashSet<MissileAnimation>();
+        private bool _minigamesEnabled = true;
+
         // ── Multiplayer state ────────────────────────────────────────────────
         private MultiplayerClient? _mpClient;
         private List<MpPlayer> _mpPlayers = new();
         private bool _isMultiplayer = false;
+        private string _serverUrl = "https://fallout67.imperiuminteractive.workers.dev";
 
         private int playerAttackTick = 0;
         private int worldWarTick = 0;
         private int angerDecayTick = 0;
 
-        public ControlPanelForm()
+        // ── Scoring ───────────────────────────────────────────────────────────
+        private Stopwatch _gameTimer = new Stopwatch();
+
+        public ControlPanelForm(string serverUrl = "https://fallout67.imperiuminteractive.workers.dev", bool minigamesEnabled = true)
         {
+            _serverUrl       = serverUrl;
+            _minigamesEnabled = minigamesEnabled;
             InitForm();
         }
 
-        public ControlPanelForm(MultiplayerClient mpClient, List<MpPlayer> mpPlayers)
+        public ControlPanelForm(MultiplayerClient mpClient, List<MpPlayer> mpPlayers, string serverUrl = "https://fallout67.imperiuminteractive.workers.dev", bool minigamesEnabled = true)
         {
-            _mpClient = mpClient;
-            _mpPlayers = mpPlayers;
-            _isMultiplayer = true;
+            _mpClient         = mpClient;
+            _mpPlayers        = mpPlayers;
+            _isMultiplayer    = true;
+            _serverUrl        = serverUrl;
+            // In multiplayer, minigames would desync timing — disable regardless of setting
+            _minigamesEnabled = false;
 
             foreach (var p in mpPlayers)
                 if (p.Country != null && p.Id != mpClient.LocalPlayerId &&
@@ -115,13 +180,21 @@ namespace fallover_67
             gameTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             gameTimer.Tick += GameTimer_Tick;
             gameTimer.Start();
+            _gameTimer.Start();
 
-            _frameStopwatch.Start();
+            // Pre-allocate trail point arrays (zero-alloc rendering)
+            _trailArrays = new PointF[TrailSteps + 2][];
+            for (int i = 0; i < _trailArrays.Length; i++)
+                _trailArrays[i] = new PointF[i];
 
-            // Run rendering at an ultra-smooth 60 FPS
-            var renderTimer = new System.Windows.Forms.Timer { Interval = 16 };
-            renderTimer.Tick += RenderTimer_Tick;
-            renderTimer.Start();
+            // Dedicated render thread for ultra-smooth 60 FPS
+            _renderThread = new Thread(RenderLoop)
+            {
+                IsBackground = true,
+                Name = "RenderLoop",
+                Priority = ThreadPriority.AboveNormal
+            };
+            _renderThread.Start();
         }
 
         // Hardcoded real-world locations so cities spawn in the correct geographic locations
@@ -218,7 +291,7 @@ namespace fallover_67
                     logBox.SelectionColor = amberText;
                     LogMsg($"[COMMANDER] {senderName.ToUpper()} launched {wNames[weapon]} at {target.ToUpper()}!");
 
-                    activeMissiles.Add(new MissileAnimation
+                    lock (_animLock) activeMissiles.Add(new MissileAnimation
                     {
                         Start = startPt,
                         End = impactPt,
@@ -227,7 +300,7 @@ namespace fallover_67
                         Speed = 0.4f,
                         OnImpact = () => {
                             var (cas, def) = CombatEngine.ExecuteRemotePlayerStrike(target, weapon);
-                            activeExplosions.Add(new ExplosionEffect { Center = impactPt, MaxRadius = radius, DamageLines = new[] { $"[{senderName.ToUpper()}] {cas:N0} casualties{(def ? " — DEFEATED" : "")}" }, IsPlayerTarget = false });
+                            lock (_animLock) activeExplosions.Add(new ExplosionEffect { Center = impactPt, MaxRadius = radius, DamageLines = new[] { $"[{senderName.ToUpper()}] {cas:N0} casualties{(def ? " — DEFEATED" : "")}" }, IsPlayerTarget = false });
                             logBox.SelectionColor = amberText; LogMsg($"[IMPACT] {target.ToUpper()} — {cas:N0} casualties from {senderName.ToUpper()}'s strike.{(def ? " NATION DEFEATED." : "")}");
                             RefreshData();
                         }
@@ -239,7 +312,7 @@ namespace fallover_67
         private void SetupUI()
         {
             this.Text = $"VAULT-TEC LAUNCH CONTROL - {GameEngine.Player.NationName}";
-            this.Size = new Size(1300, 850);
+            this.Size = new Size(1300, 830);
             this.BackColor = bgDark;
             this.StartPosition = FormStartPosition.CenterScreen;
 
@@ -276,24 +349,47 @@ namespace fallover_67
             grpProfile.Controls.Add(lblProfile);
             this.Controls.Add(grpProfile);
 
-            GroupBox grpOps = CreateBox("WEAPONS CONTROL", 820, 260, 450, 130);
+            GroupBox grpOps = CreateBox("WEAPONS CONTROL", 820, 260, 450, 175);
             cmbWeapon = new ComboBox { Location = new Point(10, 30), Size = new Size(210, 30), Font = stdFont, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.Black, ForeColor = greenText };
             btnLaunch = CreateButton("EXECUTE STRIKE", 230, 25, 210, 35, Color.DarkRed, Color.White);
-            btnSendTroops = CreateButton("DEPLOY EXTRACTION TROOPS", 10, 75, 430, 40, Color.DarkGoldenrod, Color.White);
+
+            lblSalvo = new Label { Location = new Point(10, 70), Size = new Size(430, 18), ForeColor = amberText, Font = new Font("Consolas", 9F, FontStyle.Bold), Text = "SALVO: 1" };
+            sliderSalvo = new TrackBar
+            {
+                Location = new Point(10, 88),
+                Size = new Size(430, 35),
+                Minimum = 1, Maximum = 1, Value = 1,
+                TickFrequency = 1,
+                BackColor = bgDark,
+            };
+            sliderSalvo.ValueChanged += (s, e) => lblSalvo.Text = $"SALVO: {sliderSalvo.Value}";
+            cmbWeapon.SelectedIndexChanged += (s, e) => UpdateSalvoSlider();
+
+            btnSendTroops = CreateButton("DEPLOY EXTRACTION TROOPS", 10, 128, 430, 40, Color.DarkGoldenrod, Color.White);
             btnLaunch.Click += BtnLaunch_Click;
             btnSendTroops.Click += BtnSendTroops_Click;
-            grpOps.Controls.Add(cmbWeapon); grpOps.Controls.Add(btnLaunch); grpOps.Controls.Add(btnSendTroops);
+            grpOps.Controls.Add(cmbWeapon); grpOps.Controls.Add(btnLaunch);
+            grpOps.Controls.Add(lblSalvo); grpOps.Controls.Add(sliderSalvo);
+            grpOps.Controls.Add(btnSendTroops);
             this.Controls.Add(grpOps);
 
-            GroupBox grpPlayer = CreateBox("BUNKER STATUS", 820, 400, 450, 150);
+            GroupBox grpPlayer = CreateBox("BUNKER STATUS", 820, 445, 450, 150);
             lblPlayerStats = new Label { Location = new Point(10, 25), Size = new Size(300, 120), ForeColor = greenText, Font = stdFont };
-            btnOpenShop = CreateButton("BLACK\nMARKET", 320, 25, 120, 115, Color.Black, cyanText);
+            btnOpenShop = CreateButton("BLACK\nMARKET", 320, 25, 120, 55, Color.Black, cyanText);
             btnOpenShop.Click += (s, e) => { new ShopForm().ShowDialog(); RefreshData(); };
+            var btnLeaderboard = CreateButton("LEADER\nBOARD", 320, 85, 120, 55, Color.Black, amberText);
+            btnLeaderboard.Click += async (s, e) =>
+            {
+                var lbf = new LeaderboardForm(GetServerBaseUrl());
+                lbf.Show(this);
+                await lbf.LoadAsync();
+            };
             grpPlayer.Controls.Add(lblPlayerStats); grpPlayer.Controls.Add(btnOpenShop);
+            grpPlayer.Controls.Add(btnLeaderboard);
             this.Controls.Add(grpPlayer);
 
-            GroupBox grpLogs = CreateBox("🔴 LIVE TACTICAL COMMENTARY", 10, 470, 1260, 320);
-            logBox = new RichTextBox { Location = new Point(10, 25), Size = new Size(1240, 285), BackColor = Color.Black, ForeColor = greenText, Font = new Font("Consolas", 14F, FontStyle.Bold), ReadOnly = true, BorderStyle = BorderStyle.None };
+            GroupBox grpLogs = CreateBox("🔴 LIVE TACTICAL COMMENTARY", 10, 605, 1260, 185);
+            logBox = new RichTextBox { Location = new Point(10, 25), Size = new Size(1240, 150), BackColor = Color.Black, ForeColor = greenText, Font = new Font("Consolas", 14F, FontStyle.Bold), ReadOnly = true, BorderStyle = BorderStyle.None };
             grpLogs.Controls.Add(logBox);
             this.Controls.Add(grpLogs);
 
@@ -323,68 +419,98 @@ namespace fallover_67
             return new PointF((start.X + end.X) / 2f, (start.Y + end.Y) / 2f - dist * 0.5f);
         }
 
-        // ── Ultra-Smooth Render Loop ────────────────────────────────────────────────
-        private void RenderTimer_Tick(object sender, EventArgs e)
+        // ── Dedicated Render Thread (replaces WinForms Timer for smooth 60 FPS) ──
+        private void RenderLoop()
         {
-            float dt = (float)_frameStopwatch.Elapsed.TotalSeconds;
-            _frameStopwatch.Restart();
+            var sw = new Stopwatch();
+            sw.Start();
+            const double targetMs = 1000.0 / 60.0; // 16.67ms
 
+            while (_renderRunning)
+            {
+                double elapsed = sw.Elapsed.TotalMilliseconds;
+                if (elapsed < targetMs)
+                {
+                    double remaining = targetMs - elapsed;
+                    if (remaining > 2.0)
+                        Thread.Sleep((int)(remaining - 2.0));
+                    while (sw.Elapsed.TotalMilliseconds < targetMs)
+                        Thread.SpinWait(10);
+                }
+
+                float dt = (float)sw.Elapsed.TotalSeconds;
+                sw.Restart();
+
+                UpdateAnimations(dt);
+
+                try
+                {
+                    if (!_renderRunning) break;
+                    mapPanel.BeginInvoke(new Action(() => mapPanel.Invalidate(false)));
+                }
+                catch (ObjectDisposedException) { break; }
+                catch (InvalidOperationException) { break; }
+            }
+        }
+
+        private void UpdateAnimations(float dt)
+        {
             radarAngle = (radarAngle + (120f * dt)) % 360;
 
-            for (int i = activeMissiles.Count - 1; i >= 0; i--)
+            // Freeze everything while the Iron Dome minigame is open
+            if (_gameState == GameState.IronDomeMinigame) return;
+
+            lock (_animLock)
             {
-                var m = activeMissiles[i];
-                m.Progress += m.Speed * dt;
-                if (m.Progress >= 1.0f)
+                for (int i = activeMissiles.Count - 1; i >= 0; i--)
                 {
-                    m.Progress = 1.0f;
-                    Action impact = m.OnImpact;
-                    activeMissiles.RemoveAt(i);
-                    impact?.Invoke();
+                    var m = activeMissiles[i];
+                    m.Progress += m.Speed * dt;
+                    if (m.Progress >= 1.0f)
+                    {
+                        m.Progress = 1.0f;
+                        Action impact = m.OnImpact;
+                        activeMissiles.RemoveAt(i);
+                        try { mapPanel.BeginInvoke(new Action(() => impact?.Invoke())); }
+                        catch { }
+                    }
+                }
+
+                for (int i = activeExplosions.Count - 1; i >= 0; i--)
+                {
+                    var exp = activeExplosions[i];
+                    exp.Progress += 1.2f * dt;
+                    exp.TextProgress += 0.25f * dt;
+                    if (exp.Progress >= 1.0f && exp.TextProgress >= 1.0f)
+                        activeExplosions.RemoveAt(i);
                 }
             }
-
-            for (int i = activeExplosions.Count - 1; i >= 0; i--)
-            {
-                var exp = activeExplosions[i];
-                exp.Progress += 1.2f * dt;
-                exp.TextProgress += 0.25f * dt;
-                if (exp.Progress >= 1.0f && exp.TextProgress >= 1.0f)
-                    activeExplosions.RemoveAt(i);
-            }
-
-            mapPanel.Invalidate();
         }
 
         private void MapPanel_Paint(object sender, PaintEventArgs e)
         {
             Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.CompositingQuality = CompositingQuality.HighSpeed;
+            g.InterpolationMode = InterpolationMode.Low;
+            g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
             int w = mapPanel.Width, h = mapPanel.Height;
 
             // 1. Terminal Green Tint
-            using (var tintBrush = new SolidBrush(Color.FromArgb(100, 5, 25, 5)))
-            {
-                g.FillRectangle(tintBrush, 0, 0, w, h);
-            }
+            g.FillRectangle(_tintBrush, 0, 0, w, h);
 
             // 2. STATIC GRID (Lat/Lng mapped so it sticks and zooms with the world map)
-            using (var gridPen = new Pen(Color.FromArgb(20, 0, 255, 0), 1))
+            for (int lat = -85; lat <= 85; lat += 10)
             {
-                // Draw Latitude lines (Horizontal)
-                for (int lat = -85; lat <= 85; lat += 10)
-                {
-                    PointF left = ToScreenPoint(new PointLatLng(lat, -360));
-                    PointF right = ToScreenPoint(new PointLatLng(lat, 360));
-                    g.DrawLine(gridPen, left, right);
-                }
-
-                // Draw Longitude lines (Vertical)
-                for (int lng = -360; lng <= 360; lng += 10)
-                {
-                    PointF top = ToScreenPoint(new PointLatLng(85, lng));
-                    PointF bottom = ToScreenPoint(new PointLatLng(-85, lng));
-                    g.DrawLine(gridPen, top, bottom);
-                }
+                PointF left = ToScreenPoint(new PointLatLng(lat, -360));
+                PointF right = ToScreenPoint(new PointLatLng(lat, 360));
+                g.DrawLine(_gridPen, left, right);
+            }
+            for (int lng = -360; lng <= 360; lng += 10)
+            {
+                PointF top = ToScreenPoint(new PointLatLng(85, lng));
+                PointF bottom = ToScreenPoint(new PointLatLng(-85, lng));
+                g.DrawLine(_gridPen, top, bottom);
             }
 
             // Subtly Cache the coordinates so we don't recalculate math later
@@ -395,155 +521,158 @@ namespace fallover_67
             PointF pSc = ToScreenPoint(new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX));
 
             // 3. Draw Connections
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var allyPen = new Pen(Color.FromArgb(120, cyanText), 1.5f) { DashStyle = DashStyle.Solid })
-            using (var enAllyPen = new Pen(Color.FromArgb(50, Color.LimeGreen), 1f) { DashStyle = DashStyle.Dash })
-            {
-                foreach (string a in GameEngine.Player.Allies)
-                    if (_currentScreenCoords.TryGetValue(a, out PointF anSc))
-                        g.DrawLine(allyPen, pSc, anSc);
+            foreach (string a in GameEngine.Player.Allies)
+                if (_currentScreenCoords.TryGetValue(a, out PointF anSc))
+                    g.DrawLine(_allyPen, pSc, anSc);
 
-                foreach (var n in GameEngine.Nations.Values)
-                {
-                    PointF nSc = _currentScreenCoords[n.Name];
-                    foreach (var a in n.Allies)
-                        if (_currentScreenCoords.TryGetValue(a, out PointF aaSc))
-                            g.DrawLine(enAllyPen, nSc, aaSc);
-                }
+            foreach (var n in GameEngine.Nations.Values)
+            {
+                PointF nSc = _currentScreenCoords[n.Name];
+                foreach (var a in n.Allies)
+                    if (_currentScreenCoords.TryGetValue(a, out PointF aaSc))
+                        g.DrawLine(_enAllyPen, nSc, aaSc);
             }
 
-            Font nodeFont = new Font("Consolas", 8F, FontStyle.Bold);
             float baseNodeRadius = Math.Max(3f, (float)(mapPanel.Zoom * 1.5)); // DYNAMIC SCALING
 
-            using (SolidBrush textBg = new SolidBrush(Color.FromArgb(220, 0, 0, 0)))
-            using (SolidBrush textFg = new SolidBrush(Color.White))
-            using (SolidBrush nodeBrush = new SolidBrush(Color.LimeGreen))
-            using (Pen selectPen = new Pen(Color.Yellow, 2))
+            // Player Base
+            _nodeBrush.Color = cyanText;
+            g.FillRectangle(_nodeBrush, pSc.X - baseNodeRadius, pSc.Y - baseNodeRadius, baseNodeRadius * 2, baseNodeRadius * 2);
+            string baseLabel = $"BUNKER 67 ({GameEngine.Player.NationName})";
+            SizeF bs = g.MeasureString(baseLabel, _nodeFont);
+            g.FillRectangle(_textBgBrush, pSc.X + baseNodeRadius + 3, pSc.Y - 8, bs.Width, bs.Height);
+            _textFgBrush.Color = cyanText;
+            g.DrawString(baseLabel, _nodeFont, _textFgBrush, pSc.X + baseNodeRadius + 3, pSc.Y - 8);
+
+            // Multiplayer Bases
+            foreach (var mp in _mpPlayers)
             {
-                // Player Base
-                nodeBrush.Color = cyanText;
-                g.FillRectangle(nodeBrush, pSc.X - baseNodeRadius, pSc.Y - baseNodeRadius, baseNodeRadius * 2, baseNodeRadius * 2);
-                string baseLabel = $"BUNKER 67 ({GameEngine.Player.NationName})";
-                SizeF bs = g.MeasureString(baseLabel, nodeFont);
-                g.FillRectangle(textBg, pSc.X + baseNodeRadius + 3, pSc.Y - 8, bs.Width, bs.Height);
-                textFg.Color = cyanText;
-                g.DrawString(baseLabel, nodeFont, textFg, pSc.X + baseNodeRadius + 3, pSc.Y - 8);
+                if (mp.Id == _mpClient?.LocalPlayerId || mp.Country == null) continue;
+                if (!GameEngine.Nations.TryGetValue(mp.Country, out Nation mpNation)) continue;
 
-                // Multiplayer Bases
-                foreach (var mp in _mpPlayers)
+                PointF mpSc = _currentScreenCoords[mpNation.Name];
+                Color mc = ColorTranslator.FromHtml(mp.Color);
+
+                var diamond = new PointF[] {
+                    new PointF(mpSc.X, mpSc.Y - (baseNodeRadius + 3)), new PointF(mpSc.X + (baseNodeRadius + 3), mpSc.Y),
+                    new PointF(mpSc.X, mpSc.Y + (baseNodeRadius + 3)), new PointF(mpSc.X - (baseNodeRadius + 3), mpSc.Y)
+                };
+                _nodeBrush.Color = mc;
+                g.FillPolygon(_nodeBrush, diamond);
+                string mpLabel = $"[{mp.Name.ToUpper()}]";
+                SizeF ms2 = g.MeasureString(mpLabel, _nodeFont);
+                g.FillRectangle(_textBgBrush, mpSc.X + baseNodeRadius + 5, mpSc.Y - 8, ms2.Width, ms2.Height);
+                _textFgBrush.Color = mc;
+                g.DrawString(mpLabel, _nodeFont, _textFgBrush, mpSc.X + baseNodeRadius + 5, mpSc.Y - 8);
+            }
+
+            // AI Nodes - Labels ALWAYS show now
+            foreach (var kvp in GameEngine.Nations)
+            {
+                Nation n = kvp.Value;
+                PointF sc = _currentScreenCoords[n.Name];
+
+                Color nc = Color.LimeGreen;
+                if (n.IsDefeated) nc = Color.Gray;
+                else if (GameEngine.Player.Allies.Contains(n.Name)) nc = cyanText;
+                else if (n.IsHostileToPlayer) nc = redText;
+                if (n.Name == hoveredTarget || n.Name == selectedTarget) nc = Color.White;
+
+                float r = (n.Name == hoveredTarget || n.Name == selectedTarget) ? baseNodeRadius * 1.5f : baseNodeRadius;
+                _nodeBrush.Color = nc;
+                g.FillEllipse(_nodeBrush, sc.X - r, sc.Y - r, r * 2, r * 2);
+
+                SizeF ts = g.MeasureString(n.Name.ToUpper(), _nodeFont);
+                g.FillRectangle(_textBgBrush, sc.X + r + 3, sc.Y - 8, ts.Width, ts.Height);
+                _textFgBrush.Color = nc;
+                g.DrawString(n.Name.ToUpper(), _nodeFont, _textFgBrush, sc.X + r + 3, sc.Y - 8);
+
+                if (n.Name == selectedTarget)
+                    g.DrawEllipse(_selectPen, sc.X - (r * 2), sc.Y - (r * 2), r * 4, r * 4);
+            }
+
+            // ── MISSILES & EXPLOSIONS (locked for thread safety) ──────────────────
+            lock (_animLock)
+            {
+                // Fade trails when many missiles are in flight to reduce visual noise
+                int missileCount = activeMissiles.Count;
+                int baseTrailAlpha = missileCount > 8 ? 80 : missileCount > 4 ? 130 : 180;
+
+                foreach (var m in activeMissiles)
                 {
-                    if (mp.Id == _mpClient?.LocalPlayerId || mp.Country == null) continue;
-                    if (!GameEngine.Nations.TryGetValue(mp.Country, out Nation mpNation)) continue;
+                    PointF startSc = ToScreenPoint(m.Start);
+                    PointF endSc = ToScreenPoint(m.End);
+                    PointF ctrl = GetArcControl(startSc, endSc);
 
-                    PointF mpSc = _currentScreenCoords[mpNation.Name];
-                    Color mc = ColorTranslator.FromHtml(mp.Color);
+                    int headStep = Math.Max(1, (int)(m.Progress * TrailSteps));
+                    int pointCount = Math.Min(headStep + 1, _trailArrays.Length - 1);
 
-                    var diamond = new PointF[] {
-                        new PointF(mpSc.X, mpSc.Y - (baseNodeRadius + 3)), new PointF(mpSc.X + (baseNodeRadius + 3), mpSc.Y),
-                        new PointF(mpSc.X, mpSc.Y + (baseNodeRadius + 3)), new PointF(mpSc.X - (baseNodeRadius + 3), mpSc.Y)
-                    };
-                    nodeBrush.Color = mc;
-                    g.FillPolygon(nodeBrush, diamond);
-                    string mpLabel = $"[{mp.Name.ToUpper()}]";
-                    SizeF ms2 = g.MeasureString(mpLabel, nodeFont);
-                    g.FillRectangle(textBg, mpSc.X + baseNodeRadius + 5, mpSc.Y - 8, ms2.Width, ms2.Height);
-                    textFg.Color = mc;
-                    g.DrawString(mpLabel, nodeFont, textFg, mpSc.X + baseNodeRadius + 5, mpSc.Y - 8);
-                }
+                    var pts = _trailArrays[pointCount];
+                    for (int i = 0; i < pointCount; i++)
+                        pts[i] = BezierPoint(startSc, ctrl, endSc, (float)i / TrailSteps);
 
-                // AI Nodes - Labels ALWAYS show now
-                foreach (var kvp in GameEngine.Nations)
-                {
-                    Nation n = kvp.Value;
-                    PointF sc = _currentScreenCoords[n.Name];
-
-                    Color nc = Color.LimeGreen;
-                    if (n.IsDefeated) nc = Color.Gray;
-                    else if (GameEngine.Player.Allies.Contains(n.Name)) nc = cyanText;
-                    else if (n.IsHostileToPlayer) nc = redText;
-                    if (n.Name == hoveredTarget || n.Name == selectedTarget) nc = Color.White;
-
-                    float r = (n.Name == hoveredTarget || n.Name == selectedTarget) ? baseNodeRadius * 1.5f : baseNodeRadius;
-                    nodeBrush.Color = nc;
-                    g.FillEllipse(nodeBrush, sc.X - r, sc.Y - r, r * 2, r * 2);
-
-                    SizeF ts = g.MeasureString(n.Name.ToUpper(), nodeFont);
-                    g.FillRectangle(textBg, sc.X + r + 3, sc.Y - 8, ts.Width, ts.Height);
-                    textFg.Color = nc;
-                    g.DrawString(n.Name.ToUpper(), nodeFont, textFg, sc.X + r + 3, sc.Y - 8);
-
-                    if (n.Name == selectedTarget)
+                    if (pointCount > 1)
                     {
-                        g.DrawEllipse(selectPen, sc.X - (r * 2), sc.Y - (r * 2), r * 4, r * 4);
+                        _trailPen.Color = Color.FromArgb(baseTrailAlpha, m.MissileColor);
+                        g.DrawLines(_trailPen, pts);
                     }
-                }
-            }
 
-            // ── MISSILES (Optimized Continuous Line) ──────────────────────────────
-            foreach (var m in activeMissiles)
-            {
-                PointF startSc = ToScreenPoint(m.Start);
-                PointF endSc = ToScreenPoint(m.End);
-                PointF ctrl = GetArcControl(startSc, endSc);
-
-                int steps = 25;
-                int headStep = Math.Max(1, (int)(m.Progress * steps));
-
-                var trailPts = new List<PointF>();
-                for (int i = 0; i <= headStep; i++)
-                    trailPts.Add(BezierPoint(startSc, ctrl, endSc, (float)i / steps));
-
-                if (trailPts.Count > 1)
-                {
-                    using (var trailPen = new Pen(Color.FromArgb(180, m.MissileColor), 2.5f))
-                        g.DrawLines(trailPen, trailPts.ToArray());
+                    PointF head = BezierPoint(startSc, ctrl, endSc, m.Progress);
+                    _glowBrush.Color = Color.FromArgb(150, m.MissileColor);
+                    g.FillEllipse(_glowBrush, head.X - 6, head.Y - 6, 12, 12);
+                    g.FillEllipse(_headBrush, head.X - 2, head.Y - 2, 4, 4);
                 }
 
-                PointF head = BezierPoint(startSc, ctrl, endSc, m.Progress);
-                using (var gb = new SolidBrush(Color.FromArgb(150, m.MissileColor)))
-                    g.FillEllipse(gb, head.X - 6, head.Y - 6, 12, 12);
-                using (var hb = new SolidBrush(Color.White))
-                    g.FillEllipse(hb, head.X - 2, head.Y - 2, 4, 4);
-            }
+                // Only show damage text on the 3 newest explosions to avoid screen clutter
+                var textExplosions = activeExplosions
+                    .Where(ex => ex.DamageLines != null && ex.TextProgress < 1.0f)
+                    .OrderBy(ex => ex.TextProgress)  // lowest TextProgress = most recently started
+                    .Take(3)
+                    .ToHashSet();
 
-            // ── EXPLOSIONS ─────────────────────────────────────────────────────────
-            foreach (var exp in activeExplosions)
-            {
-                PointF expSc = ToScreenPoint(exp.Center);
-                float t = exp.Progress;
-                float radius = exp.MaxRadius * (float)Math.Sin(t * Math.PI) * (float)mapPanel.Zoom * 0.5f;
-                int alpha = t < 0.3f ? (int)(t / 0.3f * 220) : (int)((1f - t) / 0.7f * 220);
-                alpha = Math.Clamp(alpha, 0, 220);
-
-                Color inner = exp.IsPlayerTarget ? Color.Crimson : Color.OrangeRed;
-                Color outer = exp.IsPlayerTarget ? Color.Red : Color.Yellow;
-
-                if (radius > 0.5f)
+                foreach (var exp in activeExplosions)
                 {
-                    using (var fb = new SolidBrush(Color.FromArgb(alpha / 3, inner)))
-                        g.FillEllipse(fb, expSc.X - radius, expSc.Y - radius, radius * 2, radius * 2);
-                    using (var rp = new Pen(Color.FromArgb(alpha, outer), 2.5f))
-                        g.DrawEllipse(rp, expSc.X - radius, expSc.Y - radius, radius * 2, radius * 2);
-                }
+                    PointF expSc = ToScreenPoint(exp.Center);
+                    float t = exp.Progress;
+                    float radius = exp.MaxRadius * (float)Math.Sin(t * Math.PI) * (float)mapPanel.Zoom * 0.5f;
+                    int alpha = t < 0.3f ? (int)(t / 0.3f * 220) : (int)((1f - t) / 0.7f * 220);
+                    alpha = Math.Clamp(alpha, 0, 220);
 
-                if (exp.DamageLines != null && exp.TextProgress < 1.0f)
-                {
+                    Color inner = exp.IsPlayerTarget ? Color.Crimson : Color.OrangeRed;
+                    Color outer = exp.IsPlayerTarget ? Color.Red : Color.Yellow;
+
+                    if (radius > 0.5f)
+                    {
+                        _expFillBrush.Color = Color.FromArgb(alpha / 3, inner);
+                        g.FillEllipse(_expFillBrush, expSc.X - radius, expSc.Y - radius, radius * 2, radius * 2);
+                        _expRingPen.Color = Color.FromArgb(alpha, outer);
+                        g.DrawEllipse(_expRingPen, expSc.X - radius, expSc.Y - radius, radius * 2, radius * 2);
+                    }
+
+                    if (!textExplosions.Contains(exp)) continue;
+
                     float tt = exp.TextProgress;
                     int ta = tt < 0.15f ? (int)(tt / 0.15f * 235) : tt < 0.80f ? 235 : (int)((1f - tt) / 0.20f * 235);
                     ta = Math.Clamp(ta, 0, 235);
 
-                    float tx2 = expSc.X + exp.MaxRadius + 8, ty2 = expSc.Y - 16;
-                    using (var font = new Font("Consolas", 8f, FontStyle.Bold))
-                    using (var txtBg = new SolidBrush(Color.FromArgb(Math.Min(ta + 40, 210), 0, 0, 0)))
-                    using (var txtFg = new SolidBrush(exp.IsPlayerTarget ? Color.FromArgb(ta, redText) : Color.FromArgb(ta, amberText)))
+                    // Cache MeasureString results on first use
+                    var nonEmpty = exp.DamageLines.Where(l => !string.IsNullOrWhiteSpace(l)).ToArray();
+                    if (exp.CachedLineSizes == null)
                     {
-                        foreach (string line in exp.DamageLines.Where(l => !string.IsNullOrWhiteSpace(l)))
-                        {
-                            SizeF sz = g.MeasureString(line, font);
-                            g.FillRectangle(txtBg, tx2 - 2, ty2 - 1, sz.Width + 4, sz.Height + 2);
-                            g.DrawString(line, font, txtFg, tx2, ty2);
-                            ty2 += sz.Height + 3;
-                        }
+                        exp.CachedLineSizes = new SizeF[nonEmpty.Length];
+                        for (int li = 0; li < nonEmpty.Length; li++)
+                            exp.CachedLineSizes[li] = g.MeasureString(nonEmpty[li], _explosionFont);
+                    }
+
+                    float tx2 = expSc.X + exp.MaxRadius + 8, ty2 = expSc.Y - 16;
+                    _expTextBgBrush.Color = Color.FromArgb(Math.Min(ta + 40, 210), 0, 0, 0);
+                    _expTextFgBrush.Color = exp.IsPlayerTarget ? Color.FromArgb(ta, redText) : Color.FromArgb(ta, amberText);
+                    for (int li = 0; li < nonEmpty.Length && li < exp.CachedLineSizes.Length; li++)
+                    {
+                        SizeF sz = exp.CachedLineSizes[li];
+                        g.FillRectangle(_expTextBgBrush, tx2 - 2, ty2 - 1, sz.Width + 4, sz.Height + 2);
+                        g.DrawString(nonEmpty[li], _explosionFont, _expTextFgBrush, tx2, ty2);
+                        ty2 += sz.Height + 3;
                     }
                 }
             }
@@ -552,15 +681,17 @@ namespace fallover_67
             float cx = w / 2f, cy = h / 2f, rr = Math.Max(w, h);
             float ex = cx + (float)(Math.Cos(radarAngle * Math.PI / 180) * rr);
             float ey = cy + (float)(Math.Sin(radarAngle * Math.PI / 180) * rr);
-            using (var rp = new Pen(Color.FromArgb(80, 57, 255, 20), 2))
-                g.DrawLine(rp, cx, cy, ex, ey);
+            g.DrawLine(_radarPen, cx, cy, ex, ey);
 
-            // Hint overlay 
+            // Hint overlay
             string hint = $"Zoom: {mapPanel.Zoom}x  │  Right-drag: pan  │  Double-click: reset";
-            using var hf = new Font("Consolas", 8F);
-            SizeF hs = g.MeasureString(hint, hf);
-            g.FillRectangle(new SolidBrush(Color.FromArgb(140, 0, 0, 0)), 4, mapPanel.Height - hs.Height - 4, hs.Width + 4, hs.Height + 2);
-            g.DrawString(hint, hf, new SolidBrush(Color.FromArgb(160, 57, 255, 20)), 6, mapPanel.Height - hs.Height - 3);
+            if (hint != _cachedHintText)
+            {
+                _cachedHintText = hint;
+                _cachedHintSize = g.MeasureString(hint, _hintFont);
+            }
+            g.FillRectangle(_hintBgBrush, 4, h - _cachedHintSize.Height - 4, _cachedHintSize.Width + 4, _cachedHintSize.Height + 2);
+            g.DrawString(hint, _hintFont, _hintFgBrush, 6, h - _cachedHintSize.Height - 3);
         }
 
         // ── Controls ─────────────────────────────────────────────────────────────────
@@ -609,7 +740,9 @@ namespace fallover_67
                 $"DIPLOMATIC STATUS: {rel}\n" +
                 $"COMBAT STATUS: {(target.IsDefeated ? "DEFEATED" : "ACTIVE")}";
 
-            btnLaunch.Enabled = !target.IsDefeated && !activeMissiles.Any(m => m.IsPlayerMissile);
+            bool hasPlayerMissile;
+            lock (_animLock) hasPlayerMissile = activeMissiles.Any(m => m.IsPlayerMissile);
+            btnLaunch.Enabled = !target.IsDefeated && !hasPlayerMissile;
             btnSendTroops.Enabled = target.IsDefeated && !target.IsLooted && !GameEngine.ActiveMissions.Any(m => m.TargetNation == target.Name);
         }
 
@@ -625,7 +758,26 @@ namespace fallover_67
             cmbWeapon.Items.Add($"Bio-Plague ({GameEngine.Player.BioPlagues})");
             cmbWeapon.Items.Add($"Orbital Laser ({GameEngine.Player.OrbitalLasers})");
             cmbWeapon.SelectedIndex = wi >= 0 ? wi : 0;
+            UpdateSalvoSlider();
             UpdateProfile();
+        }
+
+        private void UpdateSalvoSlider()
+        {
+            if (sliderSalvo == null) return;
+            int stock = cmbWeapon.SelectedIndex switch
+            {
+                0 => GameEngine.Player.StandardNukes,
+                1 => GameEngine.Player.MegaNukes,
+                2 => GameEngine.Player.BioPlagues,
+                3 => GameEngine.Player.OrbitalLasers,
+                _ => 1
+            };
+            int max = Math.Max(1, stock);
+            sliderSalvo.Maximum = max;
+            sliderSalvo.Value = Math.Min(sliderSalvo.Value, max);
+            sliderSalvo.TickFrequency = Math.Max(1, max / 10);
+            lblSalvo.Text = $"SALVO: {sliderSalvo.Value}";
         }
 
         // ── Player Strike ────────────────────────────────────────────────────────────
@@ -633,44 +785,72 @@ namespace fallover_67
         {
             if (string.IsNullOrEmpty(selectedTarget) || cmbWeapon.SelectedItem == null) return;
             int weaponIndex = cmbWeapon.SelectedIndex;
+            int salvo = sliderSalvo?.Value ?? 1;
 
-            if (weaponIndex == 0 && GameEngine.Player.StandardNukes <= 0) { MessageBox.Show("Out of Standard Nukes!"); return; }
-            if (weaponIndex == 1 && GameEngine.Player.MegaNukes <= 0) { MessageBox.Show("Out of Tsar Bombas!"); return; }
-            if (weaponIndex == 2 && GameEngine.Player.BioPlagues <= 0) { MessageBox.Show("Out of Bio-Plagues!"); return; }
-            if (weaponIndex == 3 && GameEngine.Player.OrbitalLasers <= 0) { MessageBox.Show("Out of Orbital Lasers!"); return; }
-
-            if (weaponIndex == 0) GameEngine.Player.StandardNukes--;
-            if (weaponIndex == 1) GameEngine.Player.MegaNukes--;
-            if (weaponIndex == 2) GameEngine.Player.BioPlagues--;
-            if (weaponIndex == 3) GameEngine.Player.OrbitalLasers--;
+            // Check we have enough stock
+            int stock = weaponIndex switch
+            {
+                0 => GameEngine.Player.StandardNukes,
+                1 => GameEngine.Player.MegaNukes,
+                2 => GameEngine.Player.BioPlagues,
+                3 => GameEngine.Player.OrbitalLasers,
+                _ => 0
+            };
+            if (stock <= 0) { MessageBox.Show("Out of ammo!"); return; }
+            salvo = Math.Min(salvo, stock);
 
             btnLaunch.Enabled = false;
+            _ = FireSalvoAsync(selectedTarget, weaponIndex, salvo);
+        }
 
-            Nation target = GameEngine.Nations[selectedTarget];
+        private async Task FireSalvoAsync(string targetName, int weaponIndex, int salvo)
+        {
+            if (!GameEngine.Nations.ContainsKey(targetName)) return;
+            Nation target = GameEngine.Nations[targetName];
             PointLatLng startPt = new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX);
             PointLatLng impactPt = new PointLatLng(target.MapY, target.MapX);
 
             string[] wNames = { "STANDARD NUKE", "TSAR BOMBA", "BIO-PLAGUE CANISTER", "ORBITAL LASER" };
             Color[] wColors = { Color.OrangeRed, Color.DeepPink, Color.LimeGreen, Color.Cyan };
             float[] wRadii = { 45f, 70f, 55f, 40f };
+            float rc = wRadii[weaponIndex];
 
             logBox.SelectionColor = amberText;
-            LogMsg($"[LAUNCH] {wNames[weaponIndex]} launched toward {selectedTarget.ToUpper()}! Tracking projectile...");
+            LogMsg(salvo > 1
+                ? $"[LAUNCH] {salvo}× {wNames[weaponIndex]} SALVO launched toward {targetName.ToUpper()}!"
+                : $"[LAUNCH] {wNames[weaponIndex]} launched toward {targetName.ToUpper()}! Tracking projectile...");
 
-            string tc = selectedTarget; int wc = weaponIndex; float rc = wRadii[weaponIndex];
-
-            if (_isMultiplayer && _mpClient != null)
-                _ = _mpClient.SendGameActionAsync(new { type = "strike", target = tc, weapon = wc, playerNation = GameEngine.Player.NationName });
-
-            activeMissiles.Add(new MissileAnimation
+            for (int s = 0; s < salvo; s++)
             {
-                Start = startPt,
-                End = impactPt,
-                IsPlayerMissile = true,
-                MissileColor = wColors[weaponIndex],
-                Speed = 0.4f,
-                OnImpact = async () => await HandlePlayerStrikeImpact(tc, wc, impactPt, rc)
-            });
+                // Deduct one weapon from inventory
+                if (weaponIndex == 0) GameEngine.Player.StandardNukes--;
+                else if (weaponIndex == 1) GameEngine.Player.MegaNukes--;
+                else if (weaponIndex == 2) GameEngine.Player.BioPlagues--;
+                else if (weaponIndex == 3) GameEngine.Player.OrbitalLasers--;
+                GameEngine.Player.NukesUsed++;
+
+                if (_isMultiplayer && _mpClient != null)
+                    _ = _mpClient.SendGameActionAsync(new { type = "strike", target = targetName, weapon = weaponIndex, playerNation = GameEngine.Player.NationName });
+
+                // Slight spread so missiles don't perfectly overlap
+                float spread = salvo > 1 ? (s - salvo / 2f) * 0.3f : 0f;
+                PointLatLng adjustedImpact = new PointLatLng(impactPt.Lat + spread * 0.2, impactPt.Lng + spread * 0.3);
+
+                lock (_animLock) activeMissiles.Add(new MissileAnimation
+                {
+                    Start = startPt,
+                    End = adjustedImpact,
+                    IsPlayerMissile = true,
+                    MissileColor = wColors[weaponIndex],
+                    Speed = 0.4f - (s * 0.01f), // slight stagger so they don't all land simultaneously
+                    OnImpact = async () => await HandlePlayerStrikeImpact(targetName, weaponIndex, adjustedImpact, rc)
+                });
+
+                if (s < salvo - 1)
+                    await Task.Delay(180); // 180ms stagger between launches
+            }
+
+            RefreshData();
         }
 
         private async Task HandlePlayerStrikeImpact(string targetName, int weaponIndex, PointLatLng impactPos, float blastRadius)
@@ -680,7 +860,7 @@ namespace fallover_67
             string impactLine = result.Logs.FirstOrDefault(l => l.Contains("[IMPACT]")) ?? "";
             string resultLine = result.Logs.FirstOrDefault(l => l.Contains("SURRENDER") || l.Contains("VICTORY") || l.Contains("SUCCESS")) ?? "";
 
-            activeExplosions.Add(new ExplosionEffect { Center = impactPos, MaxRadius = blastRadius, DamageLines = new[] { impactLine, resultLine }, IsPlayerTarget = false });
+            lock (_animLock) activeExplosions.Add(new ExplosionEffect { Center = impactPos, MaxRadius = blastRadius, DamageLines = new[] { impactLine, resultLine }, IsPlayerTarget = false });
 
             foreach (var l in result.Logs)
             {
@@ -688,6 +868,7 @@ namespace fallover_67
                 LogMsg(l); await Task.Delay(500);
             }
             RefreshData();
+            CheckGameOver();
 
             foreach (var (allyName, damage) in result.AllySupporters)
             {
@@ -716,7 +897,7 @@ namespace fallover_67
             PointLatLng startPt = new PointLatLng(ally.MapY, ally.MapX);
             PointLatLng impactPt = GameEngine.Nations.TryGetValue(targetName, out Nation tn) ? new PointLatLng(tn.MapY, tn.MapX) : fallbackImpact;
 
-            activeMissiles.Add(new MissileAnimation
+            lock (_animLock) activeMissiles.Add(new MissileAnimation
             {
                 Start = startPt,
                 End = impactPt,
@@ -734,7 +915,7 @@ namespace fallover_67
             long actualDmg = Math.Min(damage, target.Population);
             target.Population -= actualDmg;
 
-            activeExplosions.Add(new ExplosionEffect { Center = impactPos, MaxRadius = 35f, DamageLines = new[] { $"[ALLY IMPACT] +{actualDmg:N0} casualties" }, IsPlayerTarget = false });
+            lock (_animLock) activeExplosions.Add(new ExplosionEffect { Center = impactPos, MaxRadius = 35f, DamageLines = new[] { $"[ALLY IMPACT] +{actualDmg:N0} casualties" }, IsPlayerTarget = false });
 
             logBox.SelectionColor = cyanText;
             LogMsg($"[ALLY IMPACT] {allyName.ToUpper()} support strike caused an additional {actualDmg:N0} casualties.");
@@ -744,36 +925,109 @@ namespace fallover_67
         // ── Enemy Missiles (hostile → player) ───────────────────────────────────────
         private void LaunchEnemyMissile(Nation attacker)
         {
-            PointLatLng startPt = new PointLatLng(attacker.MapY, attacker.MapX);
+            PointLatLng startPt  = new PointLatLng(attacker.MapY, attacker.MapX);
             PointLatLng impactPt = new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX);
 
             logBox.SelectionColor = redText;
             LogMsg($"[WARNING] ⚠ RADAR ALERT: {attacker.Name.ToUpper()} HAS LAUNCHED AN ICBM! BRACE FOR IMPACT! ⚠");
 
-            activeMissiles.Add(new MissileAnimation
+            var missile = new MissileAnimation
             {
-                Start = startPt,
-                End = impactPt,
+                Start           = startPt,
+                End             = impactPt,
                 IsPlayerMissile = false,
-                MissileColor = Color.Red,
-                Speed = 0.35f,
-                OnImpact = async () => await HandleEnemyStrikeImpact(attacker.Name, impactPt)
-            });
+                MissileColor    = Color.Red,
+                Speed           = 0.35f,
+            };
+
+            // Register as inbound before setting OnImpact so the minigame sees it
+            lock (_animLock)
+            {
+                _inboundMissiles[missile] = attacker.Name;
+                activeMissiles.Add(missile);
+            }
+
+            missile.OnImpact = async () => await HandleEnemyStrikeImpact(missile, impactPt);
+
+            // First inbound missile triggers the minigame (if dome exists and minigames on)
+            if (_minigamesEnabled && GameEngine.Player.IronDomeLevel > 0 && _gameState == GameState.Playing)
+                _ = Task.Run(() => mapPanel.BeginInvoke(new Action(() => _ = TriggerIronDomeMinigame(impactPt))));
         }
 
-        private async Task HandleEnemyStrikeImpact(string attackerName, PointLatLng impactPos)
+        private async Task TriggerIronDomeMinigame(PointLatLng baseImpactPos)
         {
+            // Guard: only one session at a time
+            if (_gameState != GameState.Playing) return;
+            _gameState = GameState.IronDomeMinigame;
+
+            // Small delay so all missiles launched in the same salvo tick get registered
+            await Task.Delay(80);
+
+            // Count every inbound missile currently tracked
+            List<MissileAnimation> wave;
+            lock (_animLock)
+                wave = new List<MissileAnimation>(_inboundMissiles.Keys);
+
+            int totalMissiles = wave.Count;
+
+            var domeGame = new IronDomeForm(totalMissiles, GameEngine.Player.IronDomeLevel);
+            domeGame.ShowDialog(this);
+
+            // Mark which missiles were intercepted (by index, best-scoring first)
+            int intercepted = domeGame.InterceptedCount;
+            for (int i = 0; i < wave.Count && i < intercepted; i++)
+                lock (_animLock) _interceptedMissiles.Add(wave[i]);
+
+            _gameState = GameState.Playing;
+        }
+
+        private async Task HandleEnemyStrikeImpact(MissileAnimation missile, PointLatLng impactPos)
+        {
+            string attackerName;
+            bool   wasIntercepted;
+            lock (_animLock)
+            {
+                _inboundMissiles.TryGetValue(missile, out attackerName);
+                wasIntercepted = _interceptedMissiles.Remove(missile);
+                _inboundMissiles.Remove(missile);
+            }
+
+            if (string.IsNullOrEmpty(attackerName)) return;
+
+            if (wasIntercepted)
+            {
+                // Dud — show intercept explosion, no damage
+                lock (_animLock) activeExplosions.Add(new ExplosionEffect
+                {
+                    Center = impactPos, MaxRadius = 30f,
+                    DamageLines = new[] { $"⚡ INTERCEPTED — {attackerName.ToUpper()}" },
+                    IsPlayerTarget = false
+                });
+                logBox.SelectionColor = cyanText;
+                LogMsg($"[IRON DOME] ⚡ Missile from {attackerName.ToUpper()} INTERCEPTED!");
+                return;
+            }
+
+            // Missile gets through — apply damage (passive dome roll since minigame already ran)
             var logs = CombatEngine.ExecuteEnemyStrike(attackerName);
             if (logs.Count == 0) return;
 
             string casualtyLine = logs.FirstOrDefault(l => l.Contains("CASUALTY")) ?? "";
-            activeExplosions.Add(new ExplosionEffect { Center = impactPos, MaxRadius = 55f, DamageLines = new[] { $"STRIKE FROM {attackerName.ToUpper()}", casualtyLine }, IsPlayerTarget = true });
+            lock (_animLock) activeExplosions.Add(new ExplosionEffect
+            {
+                Center = impactPos, MaxRadius = 55f,
+                DamageLines = new[] { $"STRIKE FROM {attackerName.ToUpper()}", casualtyLine },
+                IsPlayerTarget = true
+            });
 
             foreach (var l in logs)
             {
-                logBox.SelectionColor = l.Contains("CATASTROPHE") || l.Contains("WARNING") ? redText : l.Contains("DEFENSE") ? cyanText : greenText;
-                LogMsg(l); await Task.Delay(400);
+                logBox.SelectionColor = l.Contains("CATASTROPHE") || l.Contains("WARNING") ? redText
+                                      : l.Contains("DEFENSE") ? cyanText : greenText;
+                LogMsg(l);
+                await Task.Delay(400);
             }
+
             RefreshData();
             CheckGameOver();
         }
@@ -790,7 +1044,7 @@ namespace fallover_67
             PointLatLng startPt = new PointLatLng(attacker.MapY, attacker.MapX);
             PointLatLng impactPt = new PointLatLng(target.MapY, target.MapX);
 
-            activeMissiles.Add(new MissileAnimation
+            lock (_animLock) activeMissiles.Add(new MissileAnimation
             {
                 Start = startPt,
                 End = impactPt,
@@ -811,7 +1065,7 @@ namespace fallover_67
             target.Population -= damage;
             target.AngerLevel = Math.Min(10, target.AngerLevel + 1);
 
-            activeExplosions.Add(new ExplosionEffect
+            lock (_animLock) activeExplosions.Add(new ExplosionEffect
             {
                 Center = impactPos,
                 MaxRadius = 42f,
@@ -1006,6 +1260,8 @@ namespace fallover_67
         // ── Game Timer ──────────────────────────────────────────────────────────────
         private void GameTimer_Tick(object sender, EventArgs e)
         {
+            if (_gameState != GameState.Playing) return;
+
             for (int i = GameEngine.ActiveMissions.Count - 1; i >= 0; i--)
             {
                 var mission = GameEngine.ActiveMissions[i];
@@ -1033,19 +1289,120 @@ namespace fallover_67
             TryTriggerWorldEvents();
         }
 
+        private bool _gameOver = false;
         private void CheckGameOver()
         {
+            if (_gameOver) return;
+
             if (GameEngine.Player.Population <= 0)
             {
-                MessageBox.Show("YOUR NATION WAS WIPED OUT. GAME OVER.");
-                Application.Exit();
+                _gameOver = true;
+                _gameTimer.Stop();
+                _ = HandleDefeatAsync();
+                return;
+            }
+
+            // World domination: all nations defeated or surrendered
+            if (GameEngine.Nations.Values.All(n => n.IsDefeated))
+            {
+                _gameOver = true;
+                _gameTimer.Stop();
+                _ = HandleVictoryAsync();
             }
         }
+
+        private async Task HandleVictoryAsync()
+        {
+            int elapsedSeconds = (int)_gameTimer.Elapsed.TotalSeconds;
+            int nukesUsed      = GameEngine.Player.NukesUsed;
+            string nation      = GameEngine.Player.NationName;
+            float countryMult  = GameEngine.Player.ScoreMultiplier;
+
+            long baseScore   = 1_000_000;
+            long timeBonus   = Math.Max(0, 500_000 - (elapsedSeconds * 100));
+            long nukePenalty = nukesUsed * 500;
+            long rawScore    = Math.Max(0, baseScore + timeBonus - nukePenalty);
+            long finalScore  = (long)(rawScore * countryMult);
+
+            string playerName = _mpClient?.Players.FirstOrDefault(p => p.Id == _mpClient.LocalPlayerId)?.Name ?? "COMMANDER";
+
+            LogMsg($"[VICTORY] WORLD DOMINATION ACHIEVED! Final score: {finalScore:N0}");
+
+            var form = new GameOverForm(
+                victory: true,
+                playerName, nation,
+                finalScore, baseScore, timeBonus, nukePenalty,
+                countryMult, elapsedSeconds, nukesUsed,
+                GetServerBaseUrl());
+
+            form.Load += async (s, e) => await form.LoadAsync();
+            form.ShowDialog(this);
+            Application.Exit();
+        }
+
+        private async Task HandleDefeatAsync()
+        {
+            int elapsedSeconds = (int)_gameTimer.Elapsed.TotalSeconds;
+            string playerName  = _mpClient?.Players.FirstOrDefault(p => p.Id == _mpClient.LocalPlayerId)?.Name ?? "COMMANDER";
+
+            LogMsg("[DEFEAT] YOUR NATION HAS BEEN WIPED OUT.");
+
+            var form = new GameOverForm(
+                victory: false,
+                playerName, GameEngine.Player.NationName,
+                finalScore: 0, baseScore: 0, timeBonus: 0, nukePenalty: 0,
+                countryMult: GameEngine.Player.ScoreMultiplier,
+                elapsedSeconds, nukesUsed: GameEngine.Player.NukesUsed,
+                GetServerBaseUrl());
+
+            form.Load += async (s, e) => await form.LoadAsync();
+            form.ShowDialog(this);
+            Application.Exit();
+        }
+
+        private string GetServerBaseUrl() => _serverUrl;
 
         private void LogMsg(string txt)
         {
             logBox.AppendText(txt + "\n");
             logBox.ScrollToCaret();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            _renderRunning = false;
+            _renderThread?.Join(200);
+            base.OnFormClosing(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _renderRunning = false;
+                _gridPen?.Dispose();
+                _tintBrush?.Dispose();
+                _allyPen?.Dispose();
+                _enAllyPen?.Dispose();
+                _nodeFont?.Dispose();
+                _explosionFont?.Dispose();
+                _hintFont?.Dispose();
+                _textBgBrush?.Dispose();
+                _textFgBrush?.Dispose();
+                _nodeBrush?.Dispose();
+                _selectPen?.Dispose();
+                _radarPen?.Dispose();
+                _hintBgBrush?.Dispose();
+                _hintFgBrush?.Dispose();
+                _trailPen?.Dispose();
+                _glowBrush?.Dispose();
+                _headBrush?.Dispose();
+                _expFillBrush?.Dispose();
+                _expRingPen?.Dispose();
+                _expTextBgBrush?.Dispose();
+                _expTextFgBrush?.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 }

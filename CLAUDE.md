@@ -2,16 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Prerequisites
-
-- **.NET 8.0+** (for C# game)
-- **Node.js 18+** and **npm** (for Cloudflare Worker server)
-- **Visual Studio, Visual Studio Code, or similar** (for C# development)
-- **Cloudflare account** (required to deploy the Worker; local dev with `wrangler dev` requires no account)
-
 ## Project Overview
 
-**Fallout 67** is a Windows Forms turn-based nuclear strategy game in C# (.NET 8.0). Players select one of 28 nations and launch weapons at rivals while managing defenses and alliances.
+**Fallout 67** is a Windows Forms turn-based nuclear strategy game in C# (.NET 8.0) with a Cloudflare Workers multiplayer server. Players select one of 28 nations and launch weapons at rivals while managing defenses and alliances.
 
 ## Build & Run
 
@@ -43,7 +36,7 @@ npm run deploy
 # Generate TypeScript bindings after updating wrangler.jsonc
 npm run cf-typegen
 
-# Run tests
+# Run tests (vitest with Cloudflare Workers pool)
 npm test
 ```
 
@@ -65,6 +58,8 @@ See `server/AGENTS.md` for detailed Cloudflare Workers documentation and API lim
 | `ShopForm.cs` | Black market upgrade shop |
 
 `Form1.cs` / `Form1.Designer.cs` are unused scaffolding.
+
+**Dependencies:** `GMap.NET.WinForms` NuGet package provides the interactive map control (`GMapControl`).
 
 ### Cloudflare Worker (server/)
 
@@ -92,9 +87,13 @@ In **multiplayer**, game actions are relayed through the server, but all clients
 
 The world map image is downloaded at runtime from an external URL (`postimg.cc`).
 
-### Namespace Note
+### Important Patterns
 
-The root namespace in code is `fallover_67` (intentional, different from `fallout_67` in the csproj). Both spellings appear throughout the codebase — do not "fix" one without updating the other.
+- **Namespace mismatch:** The root namespace in code is `fallover_67` (intentional, different from `fallout_67` in the csproj). Both spellings appear throughout the codebase — do not "fix" one without updating the other.
+- **Static global state:** `GameEngine` and `CombatEngine` are static classes with mutable static fields (`GameEngine.Player`, `GameEngine.Nations`, `GameEngine.ActiveMissions`). All game state flows through these globals.
+- **Player removed from Nations dict:** After `InitializeWorld()`, the player's chosen nation is **removed** from `GameEngine.Nations` and its data is copied into `GameEngine.Player`. The `Nations` dict only contains AI/other-player nations.
+- **Dual coordinate systems:** `GameData.cs` stores normalized 0–1 map coordinates (`MapX`/`MapY`) used for legacy rendering, while `ControlPanelForm.CorrectCountryCoordinates()` overwrites positions with real lat/lng for the GMap.NET control. If adding a new nation, update both places.
+- **Multiplayer determinism:** The server sends a shared `seed` at game start. All clients must produce identical `Random` sequences from that seed for alliance generation. Combat RNG in `CombatEngine` is **not** seeded (uses local `Random`), so combat results may differ between clients — the relay model tolerates this.
 
 ## Key Mechanics
 

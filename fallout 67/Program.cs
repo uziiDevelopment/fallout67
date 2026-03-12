@@ -16,15 +16,13 @@ namespace fallover_67
 
             if (lobby.IsMultiplayer)
             {
-                // Multiplayer: world is initialised with the shared seed from the server
                 GameEngine.InitializeWorld(lobby.SelectedCountry, lobby.GameSeed);
-                Application.Run(new ControlPanelForm(lobby.MpClient!, lobby.MpPlayers!));
+                Application.Run(new ControlPanelForm(lobby.MpClient!, lobby.MpPlayers!, lobby.ServerUrl, lobby.MinigamesEnabled));
             }
             else
             {
-                // Singleplayer: normal flow
                 GameEngine.InitializeWorld(lobby.SelectedCountry);
-                Application.Run(new ControlPanelForm());
+                Application.Run(new ControlPanelForm(lobby.ServerUrl, lobby.MinigamesEnabled));
             }
         }
     }

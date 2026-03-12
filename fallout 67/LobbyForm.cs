@@ -15,6 +15,8 @@ namespace fallover_67
         public MultiplayerClient? MpClient { get; private set; }
         public List<MpPlayer>? MpPlayers   { get; private set; }
         public int GameSeed                { get; private set; }
+        public string ServerUrl            { get; private set; } = "https://fallout67.imperiuminteractive.workers.dev";
+        public bool MinigamesEnabled       { get; private set; } = true;
 
         // ── Theme ────────────────────────────────────────────────────────────
         private Color bgDark    = Color.FromArgb(15, 20, 15);
@@ -37,12 +39,13 @@ namespace fallover_67
         private ListBox lstPlayers;
         private ComboBox cmbCountry;
         private Button  btnStartGame;
+        private CheckBox chkMpMinigames;
         private MultiplayerClient? _mp;
 
         public LobbyForm()
         {
             this.Text            = "VAULT-TEC LAUNCH CONTROL — NETWORK TERMINAL";
-            this.Size            = new Size(820, 640);
+            this.Size            = new Size(930, 640);
             this.BackColor       = bgDark;
             this.StartPosition   = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -55,7 +58,7 @@ namespace fallover_67
         private void BuildUI()
         {
             // Title
-            var title = MakeLabel("► FALLOUT 67 ◄  VAULT-TEC NETWORK TERMINAL", 0, 18, 820, bigFont, greenText);
+            var title = MakeLabel("► FALLOUT 67 ◄  VAULT-TEC NETWORK TERMINAL", 0, 18, 930, bigFont, greenText);
             title.TextAlign = ContentAlignment.MiddleCenter;
             this.Controls.Add(title);
 
@@ -67,13 +70,25 @@ namespace fallover_67
             this.Controls.Add(btnSP);
             this.Controls.Add(btnMP);
 
+            // Leaderboard button — top right, always visible
+            var btnLb = MakeButton("[ LEADERBOARD ]", 680, 60, 220, 50, bgDark, amberText);
+            btnLb.Click += async (s, e) =>
+            {
+                string url = txtServer?.Text.Trim() is { Length: > 0 } t ? t : ServerUrl;
+                var lbf = new LeaderboardForm(url);
+                lbf.Show(this);
+                await lbf.LoadAsync();
+            };
+            // Adjust existing button positions to make room on the right
+            this.Controls.Add(btnLb);
+
             // Divider
-            var div = new Label { Location = new Point(10, 120), Size = new Size(790, 2), BackColor = Color.FromArgb(50, greenText) };
+            var div = new Label { Location = new Point(10, 120), Size = new Size(900, 2), BackColor = Color.FromArgb(50, greenText) };
             this.Controls.Add(div);
 
             // ── Singleplayer Panel ──────────────────────────────────────────
-            pnlSP = new Panel { Location = new Point(10, 130), Size = new Size(790, 460), BackColor = bgDark, Visible = false };
-            var spHeader = MakeLabel("SELECT YOUR NATION — SINGLEPLAYER", 0, 0, 790, stdFont, amberText);
+            pnlSP = new Panel { Location = new Point(10, 130), Size = new Size(900, 460), BackColor = bgDark, Visible = false };
+            var spHeader = MakeLabel("SELECT YOUR NATION — SINGLEPLAYER", 0, 0, 900, stdFont, amberText);
             spHeader.TextAlign = ContentAlignment.MiddleCenter;
             pnlSP.Controls.Add(spHeader);
 
@@ -86,12 +101,24 @@ namespace fallover_67
             foreach (var c in GameEngine.GetAllCountryNames()) lstCountries.Items.Add(c);
             lstCountries.SelectedIndex = 0;
 
-            var btnSpLaunch = MakeButton("► LAUNCH SINGLEPLAYER ◄", 200, 408, 390, 42, Color.DarkRed, Color.White);
+            var chkSpMinigames = new CheckBox
+            {
+                Text      = "Enable minigames (Iron Dome intercept etc.)",
+                Location  = new Point(100, 408),
+                Size      = new Size(390, 22),
+                Font      = stdFont, ForeColor = amberText, BackColor = bgDark,
+                Checked   = true
+            };
+            pnlSP.Controls.Add(chkSpMinigames);
+
+            var btnSpLaunch = MakeButton("► LAUNCH SINGLEPLAYER ◄", 100, 432, 590, 42, Color.DarkRed, Color.White);
             btnSpLaunch.Click += (s, e) =>
             {
                 if (lstCountries.SelectedItem == null) return;
-                SelectedCountry = lstCountries.SelectedItem.ToString()!;
-                IsMultiplayer   = false;
+                SelectedCountry  = lstCountries.SelectedItem.ToString()!;
+                IsMultiplayer    = false;
+                MinigamesEnabled = chkSpMinigames.Checked;
+                ServerUrl        = "https://fallout67.imperiuminteractive.workers.dev";
                 this.DialogResult = DialogResult.OK;
                 this.Close();
             };
@@ -101,7 +128,7 @@ namespace fallover_67
             this.Controls.Add(pnlSP);
 
             // ── MP Setup Panel ──────────────────────────────────────────────
-            pnlMPSetup = new Panel { Location = new Point(10, 130), Size = new Size(790, 460), BackColor = bgDark, Visible = false };
+            pnlMPSetup = new Panel { Location = new Point(10, 130), Size = new Size(900, 460), BackColor = bgDark, Visible = false };
 
             pnlMPSetup.Controls.Add(MakeLabel("PLAYER NAME:", 10, 8, 140, stdFont, amberText));
             txtName   = MakeTextBox(155, 5, 200, "Commander");
@@ -124,13 +151,13 @@ namespace fallover_67
             pnlMPSetup.Controls.Add(txtJoinCode);
             pnlMPSetup.Controls.Add(btnJoin);
 
-            lblRoomCode = MakeLabel("", 10, 135, 760, stdFont, cyanText);
+            lblRoomCode = MakeLabel("", 10, 135, 870, stdFont, cyanText);
             pnlMPSetup.Controls.Add(lblRoomCode);
 
             this.Controls.Add(pnlMPSetup);
 
             // ── MP Lobby Panel ──────────────────────────────────────────────
-            pnlMPLobby = new Panel { Location = new Point(10, 130), Size = new Size(790, 460), BackColor = bgDark, Visible = false };
+            pnlMPLobby = new Panel { Location = new Point(10, 130), Size = new Size(900, 460), BackColor = bgDark, Visible = false };
 
             pnlMPLobby.Controls.Add(MakeLabel("PLAYERS IN LOBBY:", 10, 0, 350, stdFont, amberText));
 
@@ -169,10 +196,20 @@ namespace fallover_67
             };
             pnlMPLobby.Controls.Add(cmbCountry);
 
-            lblStatus = MakeLabel("Waiting for players...", 10, 268, 760, stdFont, greenText);
+            lblStatus = MakeLabel("Waiting for players...", 10, 268, 870, stdFont, greenText);
             pnlMPLobby.Controls.Add(lblStatus);
 
-            btnStartGame = MakeButton("► START GAME ◄", 10, 300, 450, 45, Color.DarkRed, Color.White);
+            chkMpMinigames = new CheckBox
+            {
+                Text      = "Enable minigames (Iron Dome intercept etc.)",
+                Location  = new Point(10, 355),
+                Size      = new Size(450, 22),
+                Font      = stdFont, ForeColor = amberText, BackColor = bgDark,
+                Checked   = true
+            };
+            pnlMPLobby.Controls.Add(chkMpMinigames);
+
+            btnStartGame = MakeButton("► START GAME ◄", 10, 382, 450, 45, Color.DarkRed, Color.White);
             btnStartGame.Visible = false;
             btnStartGame.Click  += async (s, e) =>
             {
@@ -307,11 +344,13 @@ namespace fallover_67
                 return;
             }
 
-            IsMultiplayer  = true;
-            GameSeed       = seed;
-            MpClient       = _mp;
-            MpPlayers      = players;
-            SelectedCountry = me.Country;
+            IsMultiplayer    = true;
+            GameSeed         = seed;
+            MpClient         = _mp;
+            MpPlayers        = players;
+            SelectedCountry  = me.Country;
+            ServerUrl        = txtServer.Text.Trim();
+            MinigamesEnabled = chkMpMinigames.Checked;
 
             this.DialogResult = DialogResult.OK;
             this.Close();

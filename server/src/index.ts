@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 
 export interface Env {
 	GAME_ROOMS: DurableObjectNamespace;
+	LEADERBOARD: DurableObjectNamespace;
 }
 
 interface Player {
@@ -199,6 +200,58 @@ export class GameRoom extends DurableObject {
 	}
 }
 
+// ── Leaderboard Durable Object ────────────────────────────────────────────────
+interface ScoreEntry {
+	name: string;
+	nation: string;
+	score: number;
+	seconds: number;
+	nukesUsed: number;
+	date: string;
+}
+
+export class Leaderboard extends DurableObject {
+	async fetch(request: Request): Promise<Response> {
+		const cors = {
+			'Access-Control-Allow-Origin': '*',
+			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+			'Access-Control-Allow-Headers': 'Content-Type',
+		};
+
+		if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
+
+		if (request.method === 'POST') {
+			let body: { name?: string; nation?: string; score?: number; seconds?: number; nukesUsed?: number };
+			try { body = await request.json(); } catch { return new Response('Bad JSON', { status: 400 }); }
+
+			const entry: ScoreEntry = {
+				name: String(body.name ?? 'Commander').substring(0, 24),
+				nation: String(body.nation ?? 'Unknown').substring(0, 32),
+				score: Math.max(0, Math.floor(Number(body.score) || 0)),
+				seconds: Math.max(0, Math.floor(Number(body.seconds) || 0)),
+				nukesUsed: Math.max(0, Math.floor(Number(body.nukesUsed) || 0)),
+				date: new Date().toISOString().substring(0, 10),
+			};
+
+			const scores: ScoreEntry[] = (await this.ctx.storage.get<ScoreEntry[]>('scores')) ?? [];
+			scores.push(entry);
+			scores.sort((a, b) => b.score - a.score);
+			scores.splice(20); // keep top 20
+			await this.ctx.storage.put('scores', scores);
+
+			return new Response(JSON.stringify({ ok: true, rank: scores.findIndex(s => s === entry) + 1 }), {
+				headers: { ...cors, 'Content-Type': 'application/json' },
+			});
+		}
+
+		// GET — return the leaderboard
+		const scores: ScoreEntry[] = (await this.ctx.storage.get<ScoreEntry[]>('scores')) ?? [];
+		return new Response(JSON.stringify({ scores }), {
+			headers: { ...cors, 'Content-Type': 'application/json' },
+		});
+	}
+}
+
 // ── Main Worker ──────────────────────────────────────────────────────────────
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -210,6 +263,12 @@ export default {
 		};
 
 		if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
+
+		// Leaderboard endpoints — routed to the singleton Leaderboard DO
+		if (url.pathname === '/api/score' || url.pathname === '/api/leaderboard') {
+			const id = env.LEADERBOARD.idFromName('global');
+			return env.LEADERBOARD.get(id).fetch(request);
+		}
 
 		// REST: generate a fresh room code (client then connects via /ws)
 		if (url.pathname === '/api/create' && request.method === 'POST') {
@@ -227,8 +286,9 @@ export default {
 			return env.GAME_ROOMS.get(id).fetch(request);
 		}
 
-		return new Response('Fallout 67 Multiplayer v1.0\nPOST /api/create  →  get a room code\nGET  /ws?code=XXXXXX&name=NAME  →  WebSocket', {
-			headers: { 'Content-Type': 'text/plain', ...cors },
-		});
+		return new Response(
+			'Fallout 67 v1.0\nPOST /api/create      →  get a room code\nGET  /ws?code=X&name=Y →  WebSocket\nPOST /api/score       →  submit score\nGET  /api/leaderboard  →  top 20 scores',
+			{ headers: { 'Content-Type': 'text/plain', ...cors } },
+		);
 	},
 } satisfies ExportedHandler<Env>;
