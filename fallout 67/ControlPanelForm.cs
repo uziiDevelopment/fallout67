@@ -253,12 +253,11 @@ namespace fallover_67
                 Cursor = Cursors.Cross,
                 MapProvider = GMapProviders.OpenStreetMap,
                 Position = new PointLatLng(20, 0),
-                MinZoom = 1,
-                MaxZoom = 18,
+                MinZoom = 2,           // <--- CLAMPED MIN ZOOM
+                MaxZoom = 4,           // <--- CLAMPED MAX ZOOM
                 Zoom = 2,
                 ShowCenter = false,
                 DragButton = MouseButtons.Right,
-                // MAGIC: Combining these two turns any real map into a pure dark gray terminal background
                 GrayScaleMode = true,
                 NegativeMode = true,
                 ShowTileGridLines = false
@@ -362,16 +361,30 @@ namespace fallover_67
             Graphics g = e.Graphics;
             int w = mapPanel.Width, h = mapPanel.Height;
 
-            // 1. Terminal Green Tint & Grid Overlay
+            // 1. Terminal Green Tint
             using (var tintBrush = new SolidBrush(Color.FromArgb(100, 5, 25, 5)))
             {
                 g.FillRectangle(tintBrush, 0, 0, w, h);
             }
 
+            // 2. STATIC GRID (Lat/Lng mapped so it sticks and zooms with the world map)
             using (var gridPen = new Pen(Color.FromArgb(20, 0, 255, 0), 1))
             {
-                for (int x = 0; x < w; x += 40) g.DrawLine(gridPen, x, 0, x, h);
-                for (int y = 0; y < h; y += 40) g.DrawLine(gridPen, 0, y, w, y);
+                // Draw Latitude lines (Horizontal)
+                for (int lat = -85; lat <= 85; lat += 10)
+                {
+                    PointF left = ToScreenPoint(new PointLatLng(lat, -360));
+                    PointF right = ToScreenPoint(new PointLatLng(lat, 360));
+                    g.DrawLine(gridPen, left, right);
+                }
+
+                // Draw Longitude lines (Vertical)
+                for (int lng = -360; lng <= 360; lng += 10)
+                {
+                    PointF top = ToScreenPoint(new PointLatLng(85, lng));
+                    PointF bottom = ToScreenPoint(new PointLatLng(-85, lng));
+                    g.DrawLine(gridPen, top, bottom);
+                }
             }
 
             // Subtly Cache the coordinates so we don't recalculate math later
@@ -381,7 +394,7 @@ namespace fallover_67
 
             PointF pSc = ToScreenPoint(new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX));
 
-            // 2. Draw Connections
+            // 3. Draw Connections
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using (var allyPen = new Pen(Color.FromArgb(120, cyanText), 1.5f) { DashStyle = DashStyle.Solid })
             using (var enAllyPen = new Pen(Color.FromArgb(50, Color.LimeGreen), 1f) { DashStyle = DashStyle.Dash })
@@ -571,7 +584,7 @@ namespace fallover_67
         private void ResetView()
         {
             mapPanel.Position = new PointLatLng(20, 0);
-            mapPanel.Zoom = 2;
+            mapPanel.Zoom = 2; // Fixed to respect the newly clamped MinZoom
         }
 
         // ── UI Logic ───────────────────────────────────────────────────────────────
