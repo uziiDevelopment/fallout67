@@ -30,8 +30,9 @@ namespace fallover_67
         private Font  bigFont   = new Font("Consolas", 13F, FontStyle.Bold);
 
         // ── SP widgets ───────────────────────────────────────────────────────
-        private Panel   pnlSP;
-        private ListBox lstCountries;
+        private Panel    pnlSP;
+        private ListBox  lstCountries;
+        private CheckBox chkHardMode;
 
         // ── MP widgets ───────────────────────────────────────────────────────
         private Panel   pnlMPSetup;   // create / join controls
@@ -40,8 +41,9 @@ namespace fallover_67
         private Label   lblRoomCode, lblLobbyCode, lblStatus;
         private ListBox lstPlayers;
         private ComboBox cmbCountry;
-        private Button  btnStartGame;
+        private Button   btnStartGame;
         private CheckBox chkMpMinigames;
+        private CheckBox chkMpHardMode;
         private MultiplayerClient? _mp;
 
         public LobbyForm()
@@ -138,17 +140,38 @@ namespace fallover_67
 
             lstCountries = new ListBox
             {
-                Location = new Point(100, 30), Size = new Size(590, 370),
+                Location = new Point(100, 30), Size = new Size(590, 340),
                 BackColor = Color.Black, ForeColor = greenText, Font = new Font("Consolas", 12F, FontStyle.Bold),
                 BorderStyle = BorderStyle.FixedSingle
             };
-            foreach (var c in GameEngine.GetAllCountryNames()) lstCountries.Items.Add(c);
+            foreach (var c in GameEngine.GetAllCountryNames(hardMode: false)) lstCountries.Items.Add(c);
             lstCountries.SelectedIndex = 0;
+
+            chkHardMode = new CheckBox
+            {
+                Text      = "Hard Mode (all nations, including micro-states)",
+                Location  = new Point(100, 378),
+                Size      = new Size(420, 22),
+                Font      = stdFont, ForeColor = redText, BackColor = bgDark,
+                Checked   = false
+            };
+            chkHardMode.CheckedChanged += (s, e) =>
+            {
+                string? prev = lstCountries.SelectedItem?.ToString();
+                lstCountries.Items.Clear();
+                foreach (var c in GameEngine.GetAllCountryNames(chkHardMode.Checked))
+                    lstCountries.Items.Add(c);
+                if (prev != null && lstCountries.Items.Contains(prev))
+                    lstCountries.SelectedItem = prev;
+                else if (lstCountries.Items.Count > 0)
+                    lstCountries.SelectedIndex = 0;
+            };
+            pnlSP.Controls.Add(chkHardMode);
 
             var chkSpMinigames = new CheckBox
             {
                 Text      = "Enable minigames (Iron Dome intercept etc.)",
-                Location  = new Point(100, 408),
+                Location  = new Point(100, 406),
                 Size      = new Size(390, 22),
                 Font      = stdFont, ForeColor = amberText, BackColor = bgDark,
                 Checked   = true
@@ -159,10 +182,11 @@ namespace fallover_67
             btnSpLaunch.Click += (s, e) =>
             {
                 if (lstCountries.SelectedItem == null) return;
-                SelectedCountry  = lstCountries.SelectedItem.ToString()!;
-                IsMultiplayer    = false;
-                MinigamesEnabled = chkSpMinigames.Checked;
-                ServerUrl        = "https://fallout67.imperiuminteractive.workers.dev";
+                SelectedCountry        = lstCountries.SelectedItem.ToString()!;
+                IsMultiplayer          = false;
+                MinigamesEnabled       = chkSpMinigames.Checked;
+                GameEngine.HardMode    = chkHardMode.Checked;
+                ServerUrl              = "https://fallout67.imperiuminteractive.workers.dev";
                 this.DialogResult = DialogResult.OK;
                 this.Close();
             };
@@ -232,7 +256,7 @@ namespace fallover_67
                 Font = stdFont, DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.Black, ForeColor = greenText
             };
-            foreach (var c in GameEngine.GetAllCountryNames()) cmbCountry.Items.Add(c);
+            foreach (var c in GameEngine.GetAllCountryNames(hardMode: false)) cmbCountry.Items.Add(c);
             cmbCountry.SelectedIndexChanged += async (s, e) =>
             {
                 if (_mp != null && cmbCountry.SelectedItem != null)
@@ -242,6 +266,29 @@ namespace fallover_67
 
             lblStatus = MakeLabel("Waiting for players...", 10, 268, 870, stdFont, greenText);
             pnlMPLobby.Controls.Add(lblStatus);
+
+            chkMpHardMode = new CheckBox
+            {
+                Text      = "Hard Mode (all nations, including micro-states)",
+                Location  = new Point(10, 330),
+                Size      = new Size(450, 22),
+                Font      = stdFont, ForeColor = redText, BackColor = bgDark,
+                Checked   = false,
+                Visible   = false  // only shown to host
+            };
+            chkMpHardMode.CheckedChanged += (s, e) =>
+            {
+                // Rebuild country dropdown when host toggles hard mode
+                string? current = cmbCountry.SelectedItem?.ToString();
+                cmbCountry.Items.Clear();
+                foreach (var c in GameEngine.GetAllCountryNames(chkMpHardMode.Checked))
+                    cmbCountry.Items.Add(c);
+                if (current != null && cmbCountry.Items.Contains(current))
+                    cmbCountry.SelectedItem = current;
+                else if (cmbCountry.Items.Count > 0)
+                    cmbCountry.SelectedIndex = 0;
+            };
+            pnlMPLobby.Controls.Add(chkMpHardMode);
 
             chkMpMinigames = new CheckBox
             {
@@ -361,18 +408,19 @@ namespace fallover_67
                 lstPlayers.Items.Add($"{p.Name}{ctry}{flag}");
             }
 
-            // Grey out taken countries in the dropdown
+            bool isHost = _mp?.IsHost == true;
+            chkMpHardMode.Visible = isHost;
+            btnStartGame.Visible  = isHost;
+
+            // Re-populate dropdown without taken countries
             var taken = players.Where(p => p.Country != null && p.Id != _mp?.LocalPlayerId)
                                .Select(p => p.Country!).ToHashSet();
-            // Re-populate dropdown without taken countries
             string? current = cmbCountry.SelectedItem?.ToString();
             cmbCountry.Items.Clear();
-            foreach (var c in GameEngine.GetAllCountryNames())
+            foreach (var c in GameEngine.GetAllCountryNames(chkMpHardMode.Checked))
                 if (!taken.Contains(c)) cmbCountry.Items.Add(c);
             if (current != null && cmbCountry.Items.Contains(current))
                 cmbCountry.SelectedItem = current;
-
-            btnStartGame.Visible = _mp?.IsHost == true;
             int readyCount = players.Count(p => p.Country != null);
             lblStatus.Text = $"{readyCount}/{players.Count} players have selected a country." +
                              (_mp?.IsHost == true ? "  (You are host — press START when ready)" : "  (Waiting for host to start)");
@@ -388,13 +436,14 @@ namespace fallover_67
                 return;
             }
 
-            IsMultiplayer    = true;
-            GameSeed         = seed;
-            MpClient         = _mp;
-            MpPlayers        = players;
-            SelectedCountry  = me.Country;
-            ServerUrl        = txtServer.Text.Trim();
-            MinigamesEnabled = chkMpMinigames.Checked;
+            IsMultiplayer        = true;
+            GameSeed             = seed;
+            MpClient             = _mp;
+            MpPlayers            = players;
+            SelectedCountry      = me.Country;
+            ServerUrl            = txtServer.Text.Trim();
+            MinigamesEnabled     = chkMpMinigames.Checked;
+            GameEngine.HardMode  = chkMpHardMode.Checked;
 
             this.DialogResult = DialogResult.OK;
             this.Close();

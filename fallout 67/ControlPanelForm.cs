@@ -206,36 +206,220 @@ namespace fallover_67
         // Hardcoded real-world locations so cities spawn in the correct geographic locations
         private void CorrectCountryCoordinates()
         {
-            var accurateCoords = new Dictionary<string, PointLatLng>(StringComparer.OrdinalIgnoreCase)
+var accurateCoords = new Dictionary<string, PointLatLng>(StringComparer.OrdinalIgnoreCase)
             {
-                { "USA", new PointLatLng(38.9, -77.0) },          // Washington DC
-                { "CANADA", new PointLatLng(45.4, -75.7) },       // Ottawa
-                { "MEXICO", new PointLatLng(19.4, -99.1) },       // Mexico City
-                { "CUBA", new PointLatLng(23.1, -82.3) },         // Havana
-                { "BRAZIL", new PointLatLng(-15.8, -47.9) },      // Brasilia
-                { "ARGENTINA", new PointLatLng(-34.6, -58.3) },   // Buenos Aires
-                { "UK", new PointLatLng(51.5, -0.1) },            // London
-                { "FRANCE", new PointLatLng(48.8, 2.3) },         // Paris
-                { "SPAIN", new PointLatLng(40.4, -3.7) },         // Madrid
-                { "GERMANY", new PointLatLng(52.5, 13.4) },       // Berlin
-                { "ITALY", new PointLatLng(41.9, 12.4) },         // Rome
-                { "UKRAINE", new PointLatLng(50.4, 30.5) },       // Kyiv
-                { "RUSSIA", new PointLatLng(55.7, 37.6) },        // Moscow
-                { "TURKEY", new PointLatLng(39.9, 32.8) },        // Ankara
-                { "ISRAEL", new PointLatLng(31.7, 35.2) },        // Jerusalem
-                { "EGYPT", new PointLatLng(30.0, 31.2) },         // Cairo
-                { "SAUDI ARABIA", new PointLatLng(24.7, 46.7) },  // Riyadh
-                { "IRAN", new PointLatLng(35.7, 51.4) },          // Tehran
-                { "PAKISTAN", new PointLatLng(33.7, 73.0) },      // Islamabad
-                { "INDIA", new PointLatLng(28.6, 77.2) },         // New Delhi
-                { "CHINA", new PointLatLng(39.9, 116.4) },        // Beijing
-                { "NORTH KOREA", new PointLatLng(39.0, 125.7) },  // Pyongyang
-                { "SOUTH KOREA", new PointLatLng(37.5, 126.9) },  // Seoul
-                { "JAPAN", new PointLatLng(35.6, 139.6) },        // Tokyo
-                { "INDONESIA", new PointLatLng(-6.2, 106.8) },    // Jakarta
-                { "AUSTRALIA", new PointLatLng(-35.3, 149.1) },   // Canberra
-                { "NIGERIA", new PointLatLng(9.0, 7.5) },         // Abuja
-                { "SOUTH AFRICA", new PointLatLng(-25.7, 28.2) }  // Pretoria
+                // NORTH & CENTRAL AMERICA + CARIBBEAN
+                { "USA", new PointLatLng(38.9, -77.0) },
+                { "LITTLE SAINT JAMES", new PointLatLng(18.30, -64.82) }, // US Virgin Islands
+                { "CANADA", new PointLatLng(45.4, -75.7) },
+                { "MEXICO", new PointLatLng(19.4, -99.1) },
+                { "CUBA", new PointLatLng(23.1, -82.3) },
+                { "GUATEMALA", new PointLatLng(14.6, -90.5) },
+                { "BELIZE", new PointLatLng(17.2, -88.7) },
+                { "HONDURAS", new PointLatLng(14.1, -87.2) },
+                { "EL SALVADOR", new PointLatLng(13.7, -89.2) },
+                { "NICARAGUA", new PointLatLng(12.1, -86.2) },
+                { "COSTA RICA", new PointLatLng(9.9, -84.1) },
+                { "PANAMA", new PointLatLng(8.9, -79.5) },
+                { "JAMAICA", new PointLatLng(18.0, -76.8) },
+                { "HAITI", new PointLatLng(18.5, -72.3) },
+                { "DOMINICAN REP.", new PointLatLng(18.5, -69.9) },
+                { "BAHAMAS", new PointLatLng(25.0, -77.3) },
+                { "TRINIDAD & TOBAGO", new PointLatLng(10.6, -61.5) },
+                { "BARBADOS", new PointLatLng(13.1, -59.6) },
+                { "ANTIGUA & BARBUDA", new PointLatLng(17.1, -61.8) },
+                { "SAINT LUCIA", new PointLatLng(14.0, -61.0) },
+                { "GRENADA", new PointLatLng(12.0, -61.7) },
+                { "ST. VINCENT", new PointLatLng(13.1, -61.2) },
+                { "ST. KITTS & NEVIS", new PointLatLng(17.3, -62.7) },
+                { "DOMINICA", new PointLatLng(15.3, -61.4) },
+
+                // SOUTH AMERICA
+                { "BRAZIL", new PointLatLng(-15.8, -47.9) },
+                { "ARGENTINA", new PointLatLng(-34.6, -58.3) },
+                { "COLOMBIA", new PointLatLng(4.7, -74.0) },
+                { "VENEZUELA", new PointLatLng(10.5, -66.9) },
+                { "GUYANA", new PointLatLng(6.8, -58.1) },
+                { "SURINAME", new PointLatLng(5.8, -55.2) },
+                { "ECUADOR", new PointLatLng(-0.2, -78.5) },
+                { "PERU", new PointLatLng(-12.0, -77.0) },
+                { "BOLIVIA", new PointLatLng(-16.5, -68.1) },
+                { "PARAGUAY", new PointLatLng(-25.3, -57.5) },
+                { "CHILE", new PointLatLng(-33.4, -70.6) },
+                { "URUGUAY", new PointLatLng(-34.9, -56.1) },
+
+                // EUROPE
+                { "UK", new PointLatLng(51.5, -0.1) },
+                { "FRANCE", new PointLatLng(48.8, 2.3) },
+                { "SPAIN", new PointLatLng(40.4, -3.7) },
+                { "GERMANY", new PointLatLng(52.5, 13.4) },
+                { "ITALY", new PointLatLng(41.9, 12.4) },
+                { "UKRAINE", new PointLatLng(50.4, 30.5) },
+                { "RUSSIA", new PointLatLng(55.7, 37.6) },
+                { "PORTUGAL", new PointLatLng(38.7, -9.1) },
+                { "IRELAND", new PointLatLng(53.3, -6.2) },
+                { "ICELAND", new PointLatLng(64.1, -21.9) },
+                { "NORWAY", new PointLatLng(59.9, 10.7) },
+                { "SWEDEN", new PointLatLng(59.3, 18.0) },
+                { "FINLAND", new PointLatLng(60.1, 24.9) },
+                { "DENMARK", new PointLatLng(55.6, 12.5) },
+                { "ESTONIA", new PointLatLng(59.4, 24.7) },
+                { "LATVIA", new PointLatLng(56.9, 24.1) },
+                { "LITHUANIA", new PointLatLng(54.6, 25.2) },
+                { "BELARUS", new PointLatLng(53.9, 27.5) },
+                { "POLAND", new PointLatLng(52.2, 21.0) },
+                { "CZECHIA", new PointLatLng(50.0, 14.4) },
+                { "SLOVAKIA", new PointLatLng(48.1, 17.1) },
+                { "HUNGARY", new PointLatLng(47.4, 19.0) },
+                { "AUSTRIA", new PointLatLng(48.2, 16.3) },
+                { "SWITZERLAND", new PointLatLng(46.9, 7.4) },
+                { "BELGIUM", new PointLatLng(50.8, 4.3) },
+                { "NETHERLANDS", new PointLatLng(52.3, 4.8) },
+                { "LUXEMBOURG", new PointLatLng(49.6, 6.1) },
+                { "ROMANIA", new PointLatLng(44.4, 26.1) },
+                { "MOLDOVA", new PointLatLng(47.0, 28.8) },
+                { "BULGARIA", new PointLatLng(42.6, 23.3) },
+                { "GREECE", new PointLatLng(37.9, 23.7) },
+                { "SERBIA", new PointLatLng(44.8, 20.4) },
+                { "CROATIA", new PointLatLng(45.8, 15.9) },
+                { "BOSNIA & HERZ.", new PointLatLng(43.8, 18.3) },
+                { "SLOVENIA", new PointLatLng(46.0, 14.5) },
+                { "ALBANIA", new PointLatLng(41.3, 19.8) },
+                { "NORTH MACEDONIA", new PointLatLng(41.9, 21.4) },
+                { "MONTENEGRO", new PointLatLng(42.4, 19.2) },
+                { "KOSOVO", new PointLatLng(42.6, 21.1) },
+                { "MALTA", new PointLatLng(35.8, 14.5) },
+                { "ANDORRA", new PointLatLng(42.5, 1.5) },
+                { "MONACO", new PointLatLng(43.7, 7.4) },
+                { "LIECHTENSTEIN", new PointLatLng(47.1, 9.5) },
+                { "SAN MARINO", new PointLatLng(43.9, 12.4) },
+                { "VATICAN CITY", new PointLatLng(41.9, 12.4) },
+
+                // MIDDLE EAST & CAUCASUS
+                { "TURKEY", new PointLatLng(39.9, 32.8) },
+                { "ISRAEL", new PointLatLng(31.7, 35.2) },
+                { "EGYPT", new PointLatLng(30.0, 31.2) },
+                { "SAUDI ARABIA", new PointLatLng(24.7, 46.7) },
+                { "IRAN", new PointLatLng(35.7, 51.4) },
+                { "SYRIA", new PointLatLng(33.5, 36.2) },
+                { "IRAQ", new PointLatLng(33.3, 44.3) },
+                { "JORDAN", new PointLatLng(31.9, 35.9) },
+                { "LEBANON", new PointLatLng(33.8, 35.5) },
+                { "KUWAIT", new PointLatLng(29.3, 47.9) },
+                { "UAE", new PointLatLng(24.4, 54.3) },
+                { "QATAR", new PointLatLng(25.2, 51.5) },
+                { "BAHRAIN", new PointLatLng(26.2, 50.5) },
+                { "OMAN", new PointLatLng(23.6, 58.4) },
+                { "YEMEN", new PointLatLng(15.3, 44.2) },
+                { "CYPRUS", new PointLatLng(35.1, 33.3) },
+                { "GEORGIA", new PointLatLng(41.7, 44.8) },
+                { "ARMENIA", new PointLatLng(40.1, 44.5) },
+                { "AZERBAIJAN", new PointLatLng(40.4, 49.8) },
+
+                // CENTRAL & SOUTH ASIA
+                { "PAKISTAN", new PointLatLng(33.7, 73.0) },
+                { "INDIA", new PointLatLng(28.6, 77.2) },
+                { "AFGHANISTAN", new PointLatLng(34.5, 69.1) },
+                { "KAZAKHSTAN", new PointLatLng(51.1, 71.4) },
+                { "UZBEKISTAN", new PointLatLng(41.3, 69.2) },
+                { "TURKMENISTAN", new PointLatLng(37.9, 58.3) },
+                { "KYRGYZSTAN", new PointLatLng(42.8, 74.5) },
+                { "TAJIKISTAN", new PointLatLng(38.5, 68.7) },
+                { "BANGLADESH", new PointLatLng(23.8, 90.4) },
+                { "SRI LANKA", new PointLatLng(6.9, 79.8) },
+                { "NEPAL", new PointLatLng(27.7, 85.3) },
+                { "BHUTAN", new PointLatLng(27.4, 89.6) },
+                { "MALDIVES", new PointLatLng(4.1, 73.5) },
+
+                // EAST & SOUTHEAST ASIA
+                { "CHINA", new PointLatLng(39.9, 116.4) },
+                { "NORTH KOREA", new PointLatLng(39.0, 125.7) },
+                { "SOUTH KOREA", new PointLatLng(37.5, 126.9) },
+                { "JAPAN", new PointLatLng(35.6, 139.6) },
+                { "INDONESIA", new PointLatLng(-6.2, 106.8) },
+                { "MONGOLIA", new PointLatLng(47.9, 106.9) },
+                { "TAIWAN", new PointLatLng(25.0, 121.5) },
+                { "MYANMAR", new PointLatLng(19.7, 96.0) },
+                { "THAILAND", new PointLatLng(13.7, 100.5) },
+                { "VIETNAM", new PointLatLng(21.0, 105.8) },
+                { "LAOS", new PointLatLng(17.9, 102.6) },
+                { "CAMBODIA", new PointLatLng(11.5, 104.8) },
+                { "MALAYSIA", new PointLatLng(3.1, 101.6) },
+                { "SINGAPORE", new PointLatLng(1.2, 103.8) },
+                { "PHILIPPINES", new PointLatLng(14.5, 120.9) },
+                { "BRUNEI", new PointLatLng(4.9, 114.9) },
+                { "TIMOR-LESTE", new PointLatLng(-8.5, 125.5) },
+
+                // AFRICA
+                { "NIGERIA", new PointLatLng(9.0, 7.5) },
+                { "SOUTH AFRICA", new PointLatLng(-25.7, 28.2) },
+                { "MOROCCO", new PointLatLng(34.0, -6.8) },
+                { "ALGERIA", new PointLatLng(36.7, 3.0) },
+                { "TUNISIA", new PointLatLng(36.8, 10.1) },
+                { "LIBYA", new PointLatLng(32.8, 13.1) },
+                { "SUDAN", new PointLatLng(15.5, 32.5) },
+                { "SOUTH SUDAN", new PointLatLng(4.8, 31.5) },
+                { "MALI", new PointLatLng(12.6, -8.0) },
+                { "NIGER", new PointLatLng(13.5, 2.1) },
+                { "CHAD", new PointLatLng(12.1, 15.0) },
+                { "MAURITANIA", new PointLatLng(18.0, -15.9) },
+                { "SENEGAL", new PointLatLng(14.7, -17.4) },
+                { "GAMBIA", new PointLatLng(13.4, -16.5) },
+                { "GUINEA-BISSAU", new PointLatLng(11.8, -15.5) },
+                { "GUINEA", new PointLatLng(9.5, -13.7) },
+                { "SIERRA LEONE", new PointLatLng(8.4, -13.2) },
+                { "LIBERIA", new PointLatLng(6.3, -10.7) },
+                { "IVORY COAST", new PointLatLng(6.8, -5.2) },
+                { "GHANA", new PointLatLng(5.6, -0.1) },
+                { "TOGO", new PointLatLng(6.1, 1.2) },
+                { "BENIN", new PointLatLng(6.3, 2.6) },
+                { "BURKINA FASO", new PointLatLng(12.3, -1.5) },
+                { "CAPE VERDE", new PointLatLng(14.9, -23.5) },
+                { "CAMEROON", new PointLatLng(3.8, 11.5) },
+                { "CENTRAL AFRICAN REP.", new PointLatLng(4.3, 18.5) },
+                { "EQUATORIAL GUINEA", new PointLatLng(3.7, 8.7) },
+                { "GABON", new PointLatLng(0.4, 9.4) },
+                { "CONGO", new PointLatLng(-4.2, 15.2) },
+                { "DR CONGO", new PointLatLng(-4.3, 15.3) },
+                { "SAO TOME & PRIN.", new PointLatLng(0.3, 6.7) },
+                { "ETHIOPIA", new PointLatLng(9.0, 38.7) },
+                { "SOMALIA", new PointLatLng(2.0, 45.3) },
+                { "DJIBOUTI", new PointLatLng(11.5, 43.1) },
+                { "ERITREA", new PointLatLng(15.3, 38.9) },
+                { "KENYA", new PointLatLng(-1.2, 36.8) },
+                { "UGANDA", new PointLatLng(0.3, 32.5) },
+                { "RWANDA", new PointLatLng(-1.9, 30.0) },
+                { "BURUNDI", new PointLatLng(-3.3, 29.3) },
+                { "TANZANIA", new PointLatLng(-6.1, 35.7) },
+                { "SEYCHELLES", new PointLatLng(-4.6, 55.4) },
+                { "ANGOLA", new PointLatLng(-8.8, 13.2) },
+                { "ZAMBIA", new PointLatLng(-15.3, 28.2) },
+                { "ZIMBABWE", new PointLatLng(-17.8, 31.0) },
+                { "MALAWI", new PointLatLng(-13.9, 33.7) },
+                { "MOZAMBIQUE", new PointLatLng(-25.9, 32.5) },
+                { "MADAGASCAR", new PointLatLng(-18.8, 47.5) },
+                { "NAMIBIA", new PointLatLng(-22.5, 17.0) },
+                { "BOTSWANA", new PointLatLng(-24.6, 25.9) },
+                { "LESOTHO", new PointLatLng(-29.3, 27.4) },
+                { "ESWATINI", new PointLatLng(-26.3, 31.1) },
+                { "COMOROS", new PointLatLng(-11.7, 43.2) },
+                { "MAURITIUS", new PointLatLng(-20.1, 57.5) },
+
+                // OCEANIA
+                { "AUSTRALIA", new PointLatLng(-35.3, 149.1) },
+                { "NEW ZEALAND", new PointLatLng(-41.2, 174.7) },
+                { "PAPUA NEW GUINEA", new PointLatLng(-9.4, 147.1) },
+                { "FIJI", new PointLatLng(-18.1, 178.4) },
+                { "SOLOMON ISLANDS", new PointLatLng(-9.4, 159.9) },
+                { "VANUATU", new PointLatLng(-17.7, 168.3) },
+                { "SAMOA", new PointLatLng(-13.8, -171.7) },
+                { "KIRIBATI", new PointLatLng(1.3, 172.9) },
+                { "MICRONESIA", new PointLatLng(6.9, 158.2) },
+                { "TONGA", new PointLatLng(-21.1, -175.2) },
+                { "MARSHALL ISLANDS", new PointLatLng(7.1, 171.3) },
+                { "PALAU", new PointLatLng(7.4, 134.4) },
+                { "TUVALU", new PointLatLng(-8.5, 179.1) },
+                { "NAURU", new PointLatLng(-0.5, 166.9) }
             };
 
             foreach (var nation in GameEngine.Nations.Values)
