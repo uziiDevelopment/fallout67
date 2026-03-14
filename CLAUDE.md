@@ -56,6 +56,9 @@ See `server/AGENTS.md` for detailed Cloudflare Workers documentation and API lim
 | `MultiplayerClient.cs` | WebSocket client wrapping the Cloudflare Worker; fires C# events for each message type |
 | `ControlPanelForm.cs` | Main game UI — map rendering, animations, event wiring, MP action send/receive |
 | `ShopForm.cs` | Black market upgrade shop |
+| `IronDomeForm.cs` | Click-to-intercept missile minigame; result (`InterceptedCount / TotalMissiles`) replaces the passive dome roll |
+| `GameOverForm.cs` | Victory/defeat screen — computes score breakdown and submits to `POST /api/score`; shows global leaderboard inline |
+| `LeaderboardForm.cs` | Standalone leaderboard viewer (fetches `GET /api/leaderboard`) |
 
 `Form1.cs` / `Form1.Designer.cs` are unused scaffolding.
 
@@ -70,6 +73,8 @@ After updating `server/wrangler.jsonc`, run `npm run cf-typegen` to regenerate `
 |---|---|
 | `POST /api/create` | Returns a new 6-char room code |
 | `WS /ws?code=XXXX&name=NAME` | WebSocket connection to a room |
+| `POST /api/score` | Submit a victory score (name, nation, score, seconds, nukesUsed) |
+| `GET /api/leaderboard` | Fetch top 20 scores → `{ scores: [...] }` |
 
 **Message flow:** Client → `select_country` / `start_game` / `game_action` / `chat`
 Server → `welcome` / `player_joined` / `country_selected` / `game_start` / `game_action` / `player_left`
