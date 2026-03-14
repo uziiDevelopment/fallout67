@@ -21,11 +21,17 @@ namespace fallover_67
     {
         private ClientWebSocket   _ws  = new ClientWebSocket();
         private CancellationTokenSource _cts = new CancellationTokenSource();
+        private string        _serverBaseUrl = "";
+        private string        _playerName    = "";
+        private bool          _isExplicitDisconnect = false;
+        private int           _reconnectDelay = 1000;
 
         public string        LocalPlayerId { get; private set; } = "";
         public bool          IsHost        { get; private set; }
         public string        RoomCode      { get; private set; } = "";
         public List<MpPlayer> Players      { get; private set; } = new();
+        public bool          IsConnected   => _ws.State == WebSocketState.Open;
+        public bool          IsReconnecting { get; private set; }
 
         // ── Events (fired on a thread-pool thread — Invoke to UI thread before touching UI) ──
         public event Action<string>?                     OnError;
@@ -34,29 +40,49 @@ namespace fallover_67
         public event Action<string, JsonElement>?        OnGameAction;     // senderId, action payload
         public event Action<string, string, string>?     OnChat;           // senderId, name, text
         public event Action?                             OnDisconnected;
+        public event Action<int>?                        OnReconnecting;   // attempt number
 
         // ── Connect helpers ──────────────────────────────────────────────────
         public async Task<string> CreateRoomAsync(string serverBaseUrl, string playerName)
         {
+            _serverBaseUrl = serverBaseUrl;
+            _playerName    = playerName;
+            _isExplicitDisconnect = false;
+
             using var http = new HttpClient();
             var resp = await http.PostAsync($"{NormalizeHttp(serverBaseUrl)}/api/create", null);
             resp.EnsureSuccessStatusCode();
             var doc  = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
             RoomCode = doc.RootElement.GetProperty("code").GetString()!;
-            await ConnectWsAsync(serverBaseUrl, RoomCode, playerName);
+            await ConnectWsAsync();
             return RoomCode;
         }
 
         public async Task JoinRoomAsync(string serverBaseUrl, string code, string playerName)
         {
-            RoomCode = code.Trim().ToUpperInvariant();
-            await ConnectWsAsync(serverBaseUrl, RoomCode, playerName);
+            _serverBaseUrl = serverBaseUrl;
+            _playerName    = playerName;
+            _isExplicitDisconnect = false;
+            RoomCode       = code.Trim().ToUpperInvariant();
+            await ConnectWsAsync();
         }
 
-        private async Task ConnectWsAsync(string serverBaseUrl, string code, string name)
+        private async Task ConnectWsAsync()
         {
-            var uri = $"{NormalizeWs(serverBaseUrl)}/ws?code={Uri.EscapeDataString(code)}&name={Uri.EscapeDataString(name)}";
+            if (_ws.State == WebSocketState.Open) return;
+            
+            // Dispose old if needed
+            if (_ws.State != WebSocketState.None)
+            {
+                try { _ws.Dispose(); } catch { }
+                _ws = new ClientWebSocket();
+            }
+
+            var uri = $"{NormalizeWs(_serverBaseUrl)}/ws?code={Uri.EscapeDataString(RoomCode)}&name={Uri.EscapeDataString(_playerName)}";
             await _ws.ConnectAsync(new Uri(uri), _cts.Token);
+            IsReconnecting = false;
+            _reconnectDelay = 1000; // Reset backoff
+            
             _ = Task.Run(ReadLoopAsync, _cts.Token);
         }
 
@@ -79,7 +105,7 @@ namespace fallover_67
             var buf = new byte[65_536];
             try
             {
-                while (_ws.State == WebSocketState.Open)
+                while (_ws.State == WebSocketState.Open && !_cts.IsCancellationRequested)
                 {
                     var result = await _ws.ReceiveAsync(buf, _cts.Token);
                     if (result.MessageType == WebSocketMessageType.Close) break;
@@ -87,9 +113,42 @@ namespace fallover_67
                         HandleMessage(Encoding.UTF8.GetString(buf, 0, result.Count));
                 }
             }
-            catch (OperationCanceledException) { }
-            catch { }
-            finally { OnDisconnected?.Invoke(); }
+            catch (Exception)
+            {
+                // Network error or server drop
+            }
+            finally
+            {
+                if (!_isExplicitDisconnect && !_cts.IsCancellationRequested)
+                {
+                    _ = Task.Run(HandleAutoReconnectAsync);
+                }
+                else
+                {
+                    OnDisconnected?.Invoke();
+                }
+            }
+        }
+
+        private async Task HandleAutoReconnectAsync()
+        {
+            IsReconnecting = true;
+            int attempt = 1;
+            
+            while (!_isExplicitDisconnect && !_cts.IsCancellationRequested && _ws.State != WebSocketState.Open)
+            {
+                OnReconnecting?.Invoke(attempt++);
+                try
+                {
+                    await ConnectWsAsync();
+                    return; // Success!
+                }
+                catch
+                {
+                    await Task.Delay(_reconnectDelay);
+                    _reconnectDelay = Math.Min(_reconnectDelay * 2, 15000); // Max 15s delay
+                }
+            }
         }
 
         private void HandleMessage(string json)
@@ -176,7 +235,9 @@ namespace fallover_67
 
         public void Dispose()
         {
+            _isExplicitDisconnect = true;
             _cts.Cancel();
+            try { _ws.Abort(); } catch { }
             _ws.Dispose();
         }
     }

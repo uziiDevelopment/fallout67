@@ -73,7 +73,7 @@ namespace fallover_67
         private RadarPanel mapPanel;
         private Label lblProfile, lblPlayerStats;
         private ComboBox cmbWeapon;
-        private Button btnLaunch, btnSendTroops, btnOpenShop, btnMultiStrike;
+        private Button btnLaunch, btnSendTroops, btnOpenShop, btnMultiStrike, btnDiplomacy, btnBetray;
         private RichTextBox logBox;
         private TrackBar sliderSalvo;
         private Label lblSalvo;
@@ -89,6 +89,7 @@ namespace fallover_67
         private Thread? _renderThread;
         private volatile bool _renderRunning = true;
         private readonly object _animLock = new object();
+        private readonly CameraShake _cameraShake = new CameraShake();
 
         private float radarAngle = 0;
         private string selectedTarget = "";
@@ -136,6 +137,10 @@ namespace fallover_67
         private Font _warningFont = new Font("Consolas", 24F, FontStyle.Bold);
         private Font _warningSubFont = new Font("Consolas", 12F, FontStyle.Bold);
 
+        // ── Plane rendering (diplomacy summits) ─────────────────────────────────
+        private SolidBrush _planeBrush = new SolidBrush(Color.White);
+        private Font _planeFont = new Font("Consolas", 7F, FontStyle.Bold);
+
         // ── Pre-allocated trail point arrays (zero-alloc per frame) ───────────
         private const int TrailSteps = 40;
         private PointF[][] _trailArrays;
@@ -145,7 +150,7 @@ namespace fallover_67
         private SizeF _cachedHintSize;
 
         // ── Game state machine ───────────────────────────────────────────────
-        private enum GameState { Playing, IronDomeMinigame }
+        private enum GameState { Playing, IronDomeMinigame, PlaneIntercept }
         private volatile GameState _gameState = GameState.Playing;
 
         // Tracks every enemy missile currently in flight toward the player
@@ -350,6 +355,16 @@ namespace fallover_67
             grpPlayer.Controls.Add(btnLeaderboard); grpPlayer.Controls.Add(btnRestoreSat);
             this.Controls.Add(grpPlayer);
 
+            // ── Diplomacy Controls ──────────────────────────────────────────
+            GroupBox grpDiplomacy = CreateBox("DIPLOMACY", 10, 465, 800, 55);
+            btnDiplomacy = CreateButton("PROPOSE ALLIANCE", 10, 18, 160, 30, Color.FromArgb(0, 50, 70), cyanText);
+            btnDiplomacy.Click += BtnDiplomacy_Click;
+            btnBetray = CreateButton("BETRAY ALLY", 180, 18, 130, 30, Color.FromArgb(70, 0, 0), Color.OrangeRed);
+            btnBetray.Click += (s, e) => { if (!string.IsNullOrEmpty(selectedTarget) && GameEngine.Player.Allies.Contains(selectedTarget)) PlayerBetrayAlly(selectedTarget); else MessageBox.Show("Select an allied nation to betray.", "NO ALLY SELECTED"); };
+            grpDiplomacy.Controls.Add(btnDiplomacy);
+            grpDiplomacy.Controls.Add(btnBetray);
+            this.Controls.Add(grpDiplomacy);
+
             GroupBox grpLogs = CreateBox("🔴 LIVE TACTICAL COMMENTARY", 10, 680, 1260, 185);
             logBox = new RichTextBox { Location = new Point(10, 25), Size = new Size(1240, 150), BackColor = Color.Black, ForeColor = greenText, Font = new Font("Consolas", 14F, FontStyle.Bold), ReadOnly = true, BorderStyle = BorderStyle.None };
             grpLogs.Controls.Add(logBox);
@@ -440,8 +455,11 @@ namespace fallover_67
 
             string allies = target.Allies.Count > 0 ? string.Join(", ", target.Allies) : "None";
             string rel = "NEUTRAL";
+            float acceptProb = DiplomacyEngine.CalculateAcceptanceProbability(target.Name);
             if (GameEngine.Player.Allies.Contains(target.Name)) rel = "YOUR ALLY (Will Assist)";
             else if (target.IsHostileToPlayer) rel = "HOSTILE (Will Retaliate!)";
+            else if (acceptProb > 0.5f) rel = $"OPEN TO DIPLOMACY ({acceptProb * 100:F0}%)";
+            else rel = $"NEUTRAL ({acceptProb * 100:F0}% acceptance)";
 
             string satLine = target.IsSatelliteBlind
                 ? $"◈ SATELLITES OFFLINE ({(int)(target.SatelliteBlindUntil - DateTime.Now).TotalSeconds}s)"
@@ -493,7 +511,8 @@ namespace fallover_67
                 : "ONLINE";
             int activeSubs = GameEngine.Submarines.Count(s => s.OwnerId == GameEngine.Player.NationName && !s.IsDestroyed);
             string subLine = activeSubs > 0 ? $" | SUBS: {activeSubs}" : "";
-            lblPlayerStats.Text = $"YOUR NATION: {GameEngine.Player.NationName}\nYOUR ALLIES: {pa}\nPOPULATION:  {GameEngine.Player.Population:N0}\nTREASURY:    ${GameEngine.Player.Money:N0}M\nDEFENSES:    Dome L{GameEngine.Player.IronDomeLevel} | Bunk L{GameEngine.Player.BunkerLevel} | Vac L{GameEngine.Player.VaccineLevel}{subLine}\nSATELLITES:  {satStatus}";
+            string allyLine = $"({GameEngine.Player.Allies.Count}/{GameEngine.Player.MaxAllies})";
+            lblPlayerStats.Text = $"YOUR NATION: {GameEngine.Player.NationName}\nALLIES {allyLine}: {pa}\nPOPULATION:  {GameEngine.Player.Population:N0}\nTREASURY:    ${GameEngine.Player.Money:N0}M\nDEFENSES:    Dome L{GameEngine.Player.IronDomeLevel} | Bunk L{GameEngine.Player.BunkerLevel} | Vac L{GameEngine.Player.VaccineLevel}{subLine}\nSATELLITES:  {satStatus}";
 
             int wi = cmbWeapon.SelectedIndex;
             cmbWeapon.Items.Clear();
@@ -643,6 +662,8 @@ namespace fallover_67
                 _expTextFgBrush?.Dispose();
                 _notifyFont?.Dispose();
                 _notifySubFont?.Dispose();
+                _planeBrush?.Dispose();
+                _planeFont?.Dispose();
             }
             base.Dispose(disposing);
         }

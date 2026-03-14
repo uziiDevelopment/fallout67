@@ -331,6 +331,14 @@ namespace fallover_67
             }
 
             TryTriggerWorldEvents();
+            TickDiplomacy();
+
+            // Tick summit meetings (InSummit phase runs on game timer, not render thread)
+            foreach (var summit in GameEngine.ActiveSummits.ToList())
+            {
+                if (summit.Phase == SummitPhase.InSummit && !summit.ShotDown)
+                    HandleSummitMeeting(summit, 1f); // 1 second per tick
+            }
         }
     }
 }

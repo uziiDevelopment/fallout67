@@ -5,6 +5,39 @@ using System.Drawing;
 
 namespace fallover_67
 {
+    // ── Diplomacy Data ──────────────────────────────────────────────────────
+    public enum SummitPhase { FlyingToSummit, InSummit, Returning }
+    public enum SummitOutcome { Accepted, Rejected }
+
+    public class DiplomacyState
+    {
+        public Dictionary<string, int> AllianceAge { get; set; } = new();  // ally name → ticks since formed
+        public int BetrayalCooldown { get; set; } = 0;                      // ticks until can betray/be betrayed again
+        public string? LastBetrayedBy { get; set; }
+        public float DiplomacyMood { get; set; } = 0.5f;                   // 0=hostile, 1=friendly toward player
+    }
+
+    public class SummitFlight
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string Nation1 { get; set; } = "";   // initiator
+        public string Nation2 { get; set; } = "";   // target
+        public string HostNation { get; set; } = ""; // summit location (largest of the two)
+        public float StartLat { get; set; }
+        public float StartLng { get; set; }
+        public float EndLat { get; set; }
+        public float EndLng { get; set; }
+        public float Progress { get; set; } = 0f;
+        public float Speed { get; set; } = 0.15f;
+        public SummitPhase Phase { get; set; } = SummitPhase.FlyingToSummit;
+        public float SummitTimer { get; set; } = 0f;  // seconds spent at summit
+        public bool IsPlayerInitiated { get; set; }
+        public bool IsPlayerPlane { get; set; }       // player's own plane in flight
+        public bool ShotDown { get; set; }
+        public float NegotiationBonus { get; set; }   // from minigame
+        public SummitOutcome? Result { get; set; }
+    }
+
     public class Nation
     {
         public string Name { get; set; }
@@ -21,6 +54,7 @@ namespace fallover_67
         public float MapY { get; set; }
 
         public List<string> Allies { get; set; } = new List<string>();
+        public DiplomacyState Diplomacy { get; set; } = new DiplomacyState();
 
         // 0–10: increases when this nation is struck; drives multi-missile salvos
         public int AngerLevel { get; set; } = 0;
@@ -83,6 +117,9 @@ namespace fallover_67
         public int IndustryLevel { get; set; } = 1;
 
         public List<string> Allies { get; set; } = new List<string>();
+        public int BetrayalCooldown { get; set; } = 0;
+        public int MaxAllies { get; set; } = 3;
+        public int DiplomacyCooldown { get; set; } = 0;  // ticks until next summit attempt
     }
 
     public class Submarine
@@ -122,6 +159,7 @@ namespace fallover_67
         public static Dictionary<string, Nation> Nations = new Dictionary<string, Nation>();
         public static List<TroopMission> ActiveMissions = new List<TroopMission>();
         public static List<Submarine> Submarines = new List<Submarine>();
+        public static List<SummitFlight> ActiveSummits = new List<SummitFlight>();
 
         // When false, only nations with population ≥ 5,000,000 are included as AI opponents.
         // Set by LobbyForm before calling InitializeWorld.
@@ -192,6 +230,7 @@ namespace fallover_67
             Nations.Clear();
             ActiveMissions.Clear();
             Submarines.Clear();
+            ActiveSummits.Clear();
             Player = new PlayerState();
 
             var rawNations = BuildRawNations();
@@ -214,6 +253,14 @@ namespace fallover_67
                         Nations[ally].Allies.Add(name);
                     }
                 }
+            }
+
+            // Initialize diplomacy moods based on difficulty
+            foreach (var n in Nations.Values)
+            {
+                n.Diplomacy.DiplomacyMood = Math.Max(0.1f, 0.6f - n.Difficulty * 0.08f);
+                foreach (var allyName in n.Allies)
+                    n.Diplomacy.AllianceAge[allyName] = 0;
             }
 
             // Extract Player — copy chosen nation's data into PlayerState and remove from AI pool

@@ -55,6 +55,7 @@ namespace fallover_67
                 sw.Restart();
 
                 UpdateAnimations(dt);
+                _cameraShake.Update(dt);
 
                 try
                 {
@@ -70,8 +71,8 @@ namespace fallover_67
         {
             radarAngle = (radarAngle + (120f * dt)) % 360;
 
-            // Freeze everything while the Iron Dome minigame is open
-            if (_gameState == GameState.IronDomeMinigame) return;
+            // Freeze everything while a minigame is open
+            if (_gameState != GameState.Playing) return;
 
             lock (_animLock)
             {
@@ -92,6 +93,9 @@ namespace fallover_67
                 for (int i = activeExplosions.Count - 1; i >= 0; i--)
                 {
                     var exp = activeExplosions[i];
+                    // Trigger camera shake on first frame of a new explosion
+                    if (exp.Progress == 0f)
+                        _cameraShake.AddTrauma(exp.MaxRadius);
                     exp.Progress += 1.2f * dt;
                     exp.TextProgress += 0.25f * dt;
                     if (exp.Progress >= 1.0f && exp.TextProgress >= 1.0f)
@@ -137,6 +141,27 @@ namespace fallover_67
                     }
                 }
 
+                // --- SUMMIT PLANE MOVEMENT ---
+                for (int i = GameEngine.ActiveSummits.Count - 1; i >= 0; i--)
+                {
+                    var flight = GameEngine.ActiveSummits[i];
+                    if (flight.ShotDown) { GameEngine.ActiveSummits.RemoveAt(i); continue; }
+
+                    if (flight.Phase == SummitPhase.InSummit)
+                    {
+                        // Handled on game timer thread via HandleSummitMeeting
+                        continue;
+                    }
+
+                    flight.Progress += flight.Speed * dt;
+                    if (flight.Progress >= 1.0f)
+                    {
+                        flight.Progress = 1.0f;
+                        try { mapPanel.BeginInvoke(new Action(() => HandleSummitPhaseComplete(flight))); }
+                        catch { }
+                    }
+                }
+
                 if (_strikeWarningTimer > 0)
                 {
                     _strikeWarningTimer -= dt;
@@ -176,6 +201,10 @@ namespace fallover_67
             g.InterpolationMode = InterpolationMode.Low;
             g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
             int w = mapPanel.Width, h = mapPanel.Height;
+
+            // ── Camera shake offset ──────────────────────────────────────────
+            if (_cameraShake.IsActive)
+                g.TranslateTransform(_cameraShake.OffsetX, _cameraShake.OffsetY);
 
             // 1. Terminal Green Tint
             g.FillRectangle(_tintBrush, 0, 0, w, h);
@@ -398,6 +427,68 @@ namespace fallover_67
                         string nameText = sub.Name.ToUpper();
                         if (isWreck) nameText += " [WRECK]";
                         g.DrawString(nameText, _nodeFont, Brushes.White, pos.X + 10, pos.Y - 6);
+                    }
+                }
+            }
+
+            // --- SUMMIT PLANES ---
+            lock (_animLock)
+            {
+                foreach (var flight in GameEngine.ActiveSummits)
+                {
+                    if (flight.ShotDown) continue;
+
+                    float planeLat, planeLng;
+                    if (flight.Phase == SummitPhase.InSummit)
+                    {
+                        planeLat = flight.EndLat;
+                        planeLng = flight.EndLng;
+                    }
+                    else
+                    {
+                        planeLat = flight.StartLat + (flight.EndLat - flight.StartLat) * flight.Progress;
+                        planeLng = flight.StartLng + (flight.EndLng - flight.StartLng) * flight.Progress;
+                    }
+
+                    PointF planeSc = ToScreenPoint(new PointLatLng(planeLat, planeLng));
+
+                    // Dashed flight path
+                    PointF startSc = ToScreenPoint(new PointLatLng(flight.StartLat, flight.StartLng));
+                    PointF endSc = ToScreenPoint(new PointLatLng(flight.EndLat, flight.EndLng));
+                    Color planeColor = flight.IsPlayerPlane ? Color.Cyan :
+                                       flight.IsPlayerInitiated ? Color.Gold : Color.White;
+                    using var pathPen = new Pen(Color.FromArgb(40, planeColor), 1f) { DashStyle = DashStyle.Dot };
+                    g.DrawLine(pathPen, startSc, endSc);
+
+                    // Plane triangle pointing in direction of travel
+                    float angle = (float)Math.Atan2(endSc.Y - startSc.Y, endSc.X - startSc.X);
+                    var state = g.Save();
+                    g.TranslateTransform(planeSc.X, planeSc.Y);
+                    g.RotateTransform(angle * 180f / (float)Math.PI);
+
+                    _planeBrush.Color = planeColor;
+                    PointF[] planeShape = { new PointF(-10, -5), new PointF(10, 0), new PointF(-10, 5), new PointF(-6, 0) };
+                    g.FillPolygon(_planeBrush, planeShape);
+
+                    // Engine glow
+                    _planeBrush.Color = Color.FromArgb(80, Color.Orange);
+                    g.FillEllipse(_planeBrush, -14, -3, 6, 6);
+
+                    g.Restore(state);
+
+                    // Label
+                    string phaseText = flight.Phase == SummitPhase.InSummit ? "IN SESSION" :
+                                       flight.Phase == SummitPhase.Returning ? "RETURNING" : "EN ROUTE";
+                    string label = $"✈ {flight.Nation1} → {flight.Nation2} [{phaseText}]";
+                    _planeBrush.Color = Color.FromArgb(180, planeColor);
+                    g.DrawString(label, _planeFont, _planeBrush, planeSc.X + 14, planeSc.Y - 8);
+
+                    // Pulsing ring when at summit
+                    if (flight.Phase == SummitPhase.InSummit)
+                    {
+                        float pulseR = 12f + (float)Math.Sin(flight.SummitTimer * 3) * 4f;
+                        using var pulsePen = new Pen(Color.FromArgb(100, planeColor), 1.5f);
+                        g.DrawEllipse(pulsePen, planeSc.X - pulseR, planeSc.Y - pulseR, pulseR * 2, pulseR * 2);
                     }
                 }
             }
@@ -655,6 +746,26 @@ namespace fallover_67
                                 // Salvage logic
                                 TrySalvageWreck(sub);
                             }
+                            return;
+                        }
+                    }
+                }
+
+                // Check if we clicked a summit plane (for intercept)
+                lock (_animLock)
+                {
+                    foreach (var flight in GameEngine.ActiveSummits)
+                    {
+                        if (flight.ShotDown || flight.IsPlayerInitiated || flight.IsPlayerPlane) continue;
+                        if (flight.Phase != SummitPhase.FlyingToSummit && flight.Phase != SummitPhase.Returning) continue;
+
+                        float planeLat = flight.StartLat + (flight.EndLat - flight.StartLat) * flight.Progress;
+                        float planeLng = flight.StartLng + (flight.EndLng - flight.StartLng) * flight.Progress;
+                        PointF planeSc = ToScreenPoint(new PointLatLng(planeLat, planeLng));
+                        float pdx = planeSc.X - e.X, pdy = planeSc.Y - e.Y;
+                        if (pdx * pdx + pdy * pdy < 400) // 20px radius
+                        {
+                            TryInterceptSummitPlane(flight);
                             return;
                         }
                     }

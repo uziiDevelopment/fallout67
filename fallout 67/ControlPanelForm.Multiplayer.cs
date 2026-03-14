@@ -15,7 +15,21 @@ namespace fallover_67
             if (_mpClient == null) return;
             _mpClient.OnGameAction += (senderId, action) => { if (InvokeRequired) Invoke(new Action(() => HandleRemoteAction(senderId, action))); else HandleRemoteAction(senderId, action); };
             _mpClient.OnChat += (senderId, name, text) => { if (InvokeRequired) Invoke(new Action(() => { logBox.SelectionColor = cyanText; LogMsg($"[COMMS] {name.ToUpper()}: {text}"); })); };
-            _mpClient.OnDisconnected += () => { if (InvokeRequired) Invoke(new Action(() => { logBox.SelectionColor = redText; LogMsg("[NETWORK] âš  Lost connection to multiplayer server."); })); };
+            
+            _mpClient.OnReconnecting += (attempt) => { 
+                if (InvokeRequired) Invoke(new Action(() => { 
+                    logBox.SelectionColor = Color.Yellow; 
+                    LogMsg($"[NETWORK] âš  Link lost. Reconnection attempt #{attempt}..."); 
+                })); 
+            };
+
+            _mpClient.OnDisconnected += () => { 
+                if (InvokeRequired) Invoke(new Action(() => { 
+                    logBox.SelectionColor = redText; 
+                    LogMsg("[NETWORK] âœ– Final disconnect. Tactical data link offline."); 
+                })); 
+            };
+
             logBox.SelectionColor = cyanText; LogMsg("[NETWORK] Multiplayer session active. Other commanders are online.");
         }
 
@@ -273,6 +287,42 @@ namespace fallover_67
                     string srId = action.GetProperty("subId").GetString();
                     var srSub = GameEngine.Submarines.FirstOrDefault(s => s.Id == srId);
                     if (srSub != null) { srSub.Health = 50; srSub.OwnerId = senderName; srSub.NukeCount = 0; LogMsg($"[RECOVERY] {senderName.ToUpper()} salvaged submarine {srSub.Name.ToUpper()}."); }
+                    break;
+
+                // ── Diplomacy ──────────────────────────────────────────────────
+                case "diplomacy_summit":
+                    {
+                        string dn1 = action.GetProperty("nation1").GetString() ?? "";
+                        string dn2 = action.GetProperty("nation2").GetString() ?? "";
+                        string dHost = action.GetProperty("host").GetString() ?? "";
+                        logBox.SelectionColor = amberText;
+                        LogMsg($"[DIPLOMACY] {dn1.ToUpper()} is sending a diplomatic plane to {dn2.ToUpper()}.");
+                        AddNotification("REMOTE SUMMIT", $"{dn1} → {dn2}", Color.Gold, 5f);
+                    }
+                    break;
+
+                case "diplomacy_alliance":
+                    {
+                        string an1 = action.GetProperty("nation1").GetString() ?? "";
+                        string an2 = action.GetProperty("nation2").GetString() ?? "";
+                        DiplomacyEngine.FormAlliance(an1, an2);
+                        logBox.SelectionColor = cyanText;
+                        LogMsg($"[DIPLOMACY] {an1.ToUpper()} and {an2.ToUpper()} have formed an alliance.");
+                        AddNotification("NEW ALLIANCE", $"{an1} + {an2}", Color.Cyan, 5f);
+                        RefreshData();
+                    }
+                    break;
+
+                case "diplomacy_betrayal":
+                    {
+                        string db = action.GetProperty("betrayer").GetString() ?? "";
+                        string dv = action.GetProperty("victim").GetString() ?? "";
+                        DiplomacyEngine.BreakAlliance(db, dv);
+                        logBox.SelectionColor = redText;
+                        LogMsg($"[BETRAYAL] {db.ToUpper()} has betrayed {dv.ToUpper()}!");
+                        AddNotification("BETRAYAL", $"{db} → {dv}", Color.Red, 6f);
+                        RefreshData();
+                    }
                     break;
             }
         }
