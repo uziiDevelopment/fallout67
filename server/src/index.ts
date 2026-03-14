@@ -19,6 +19,11 @@ interface RoomState {
 	gameStarted: boolean;
 	seed: number;
 	takenCountries: string[];
+	diplomacyLog: DiplomacyEvent[];
+}
+
+interface DiplomacyEvent {
+	action: unknown; // the full game_action payload relayed to clients
 }
 
 const PLAYER_COLORS = ['#00FFFF', '#FF6600', '#FF00FF', '#FFFF00', '#00FF99', '#FF4444'];
@@ -55,42 +60,70 @@ export class GameRoom extends DurableObject {
 				gameStarted: false,
 				seed: Math.floor(Math.random() * 1_000_000),
 				takenCountries: [],
+				diplomacyLog: [],
 			};
 		}
 
+		// Ensure diplomacyLog exists for rooms created before this field was added
+		if (!room.diplomacyLog) room.diplomacyLog = [];
+
+		let playerId: string;
+		let color: string;
+		let isReconnect = false;
+
 		if (room.gameStarted) {
-			// Reject late joiners mid-game
-			const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
-			this.ctx.acceptWebSocket(server);
-			server.send(JSON.stringify({ type: 'error', message: 'Game already in progress' }));
-			server.close(1008, 'Game in progress');
-			return new Response(null, { status: 101, webSocket: client });
+			// Mid-game: only allow reconnection by matching player name
+			const existing = room.players.find((p) => p.name === playerName);
+			if (!existing) {
+				// Truly new player trying to join mid-game — reject
+				const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
+				this.ctx.acceptWebSocket(server);
+				server.send(JSON.stringify({ type: 'error', message: 'Game already in progress' }));
+				server.close(1008, 'Game in progress');
+				return new Response(null, { status: 101, webSocket: client });
+			}
+			// Reconnecting player — reuse their identity
+			playerId = existing.id;
+			color = existing.color;
+			isReconnect = true;
+		} else {
+			// Pre-game: new player joins
+			playerId = crypto.randomUUID();
+			color = PLAYER_COLORS[room.players.length % PLAYER_COLORS.length];
+			if (!room.hostId) room.hostId = playerId;
+
+			const player: Player = { id: playerId, name: playerName, country: null, color };
+			room.players.push(player);
+			await this.ctx.storage.put('room', room);
 		}
-
-		const playerId = crypto.randomUUID();
-		const color = PLAYER_COLORS[room.players.length % PLAYER_COLORS.length];
-		if (!room.hostId) room.hostId = playerId;
-
-		const player: Player = { id: playerId, name: playerName, country: null, color };
-		room.players.push(player);
-		await this.ctx.storage.put('room', room);
 
 		const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
 		this.ctx.acceptWebSocket(server);
 		server.serializeAttachment({ playerId, name: playerName });
 
-		// Greet new player with full room state
+		// Greet player with full room state
 		server.send(
 			JSON.stringify({
 				type: 'welcome',
 				playerId,
 				isHost: playerId === room.hostId,
 				room,
+				isReconnect,
 			}),
 		);
 
-		// Tell everyone else
-		this.broadcast(server, { type: 'player_joined', player, players: room.players });
+		if (isReconnect) {
+			// Replay diplomacy events so the reconnecting client catches up
+			for (const evt of room.diplomacyLog) {
+				server.send(JSON.stringify({ type: 'game_action', senderId: 'server', action: evt.action }));
+			}
+			// Tell others the player is back
+			this.broadcast(server, { type: 'player_reconnected', playerId, name: playerName, players: room.players });
+		} else {
+			// Tell everyone else about the new player
+			const player = room.players.find((p) => p.id === playerId)!;
+			this.broadcast(server, { type: 'player_joined', player, players: room.players });
+		}
 
 		return new Response(null, { status: 101, webSocket: client });
 	}
@@ -144,6 +177,14 @@ export class GameRoom extends DurableObject {
 
 			case 'game_action': {
 				if (!room.gameStarted) break;
+				// Record diplomacy events for replay on reconnect
+				const action = msg.action as { type?: string } | undefined;
+				if (action?.type === 'diplomacy_alliance' || action?.type === 'diplomacy_betrayal') {
+					room.diplomacyLog.push({ action });
+					// Cap log size to prevent unbounded growth
+					if (room.diplomacyLog.length > 200) room.diplomacyLog = room.diplomacyLog.slice(-200);
+					await this.ctx.storage.put('room', room);
+				}
 				// Relay to everyone else; they apply it locally
 				this.broadcast(ws, { type: 'game_action', senderId: meta.playerId, action: msg.action });
 				break;
@@ -164,17 +205,39 @@ export class GameRoom extends DurableObject {
 		let room = await this.ctx.storage.get<RoomState>('room');
 		if (!room) return;
 
-		const leaving = room.players.find((p) => p.id === meta.playerId);
-		if (leaving?.country) room.takenCountries = room.takenCountries.filter((c) => c !== leaving.country);
-		room.players = room.players.filter((p) => p.id !== meta.playerId);
+		if (room.gameStarted) {
+			// Mid-game: keep the player in the roster so they can reconnect.
+			// Only transfer host if needed and notify others of temporary disconnect.
+			if (room.hostId === meta.playerId) {
+				// Find another *connected* player to be host
+				const connectedIds = new Set<string>();
+				for (const sock of this.ctx.getWebSockets()) {
+					if (sock === ws) continue;
+					const m = sock.deserializeAttachment() as { playerId: string } | null;
+					if (m) connectedIds.add(m.playerId);
+				}
+				const newHost = room.players.find((p) => connectedIds.has(p.id));
+				if (newHost) {
+					room.hostId = newHost.id;
+					await this.ctx.storage.put('room', room);
+					this.sendToPlayer(newHost.id, { type: 'you_are_host' });
+				}
+			}
+			this.broadcastAll({ type: 'player_disconnected', playerId: meta.playerId, name: room.players.find(p => p.id === meta.playerId)?.name, players: room.players });
+		} else {
+			// Pre-game: fully remove the player
+			const leaving = room.players.find((p) => p.id === meta.playerId);
+			if (leaving?.country) room.takenCountries = room.takenCountries.filter((c) => c !== leaving.country);
+			room.players = room.players.filter((p) => p.id !== meta.playerId);
 
-		if (room.hostId === meta.playerId && room.players.length > 0) {
-			room.hostId = room.players[0].id;
-			this.sendToPlayer(room.players[0].id, { type: 'you_are_host' });
+			if (room.hostId === meta.playerId && room.players.length > 0) {
+				room.hostId = room.players[0].id;
+				this.sendToPlayer(room.players[0].id, { type: 'you_are_host' });
+			}
+
+			await this.ctx.storage.put('room', room);
+			this.broadcastAll({ type: 'player_left', playerId: meta.playerId, players: room.players });
 		}
-
-		await this.ctx.storage.put('room', room);
-		this.broadcastAll({ type: 'player_left', playerId: meta.playerId, players: room.players });
 	}
 
 	private broadcast(exclude: WebSocket, msg: object): void {

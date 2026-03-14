@@ -21,21 +21,41 @@ namespace fallover_67
                 damage = (long)(target.MaxPopulation * (0.04 + rng.NextDouble() * 0.14));
             }
 
-            if (_isMultiplayer)
+            if (_isMultiplayer && _mpClient != null)
             {
-                _ = _mpClient.SendGameActionAsync(new
-                {
-                    type = "ai_launch",
-                    attacker = attacker.Name,
-                    target = targetName,
-                    salvo = salvo,
-                    damage = damage,
-                    lat = lat,
-                    lng = lng
-                });
+                // Await the send — if the socket is down, the message queues for
+                // delivery on reconnect instead of being silently lost.
+                _ = SendAiLaunchWithRetryAsync(attacker.Name, targetName, salvo, damage, lat, lng);
             }
 
             TriggerAiLaunchLocal(attacker.Name, targetName, salvo, damage, lat, lng);
+        }
+
+        private async Task SendAiLaunchWithRetryAsync(string attackerName, string targetName, int salvo, long damage, double? lat, double? lng)
+        {
+            var payload = new
+            {
+                type = "ai_launch",
+                attacker = attackerName,
+                target = targetName,
+                salvo = salvo,
+                damage = damage,
+                lat = lat,
+                lng = lng
+            };
+
+            // First attempt — goes to queue if socket is down
+            await _mpClient!.SendGameActionAsync(payload);
+
+            // If we're disconnected, the message is queued and will drain on reconnect.
+            // One retry after a short delay covers the brief window where the socket
+            // just dropped but hasn't been detected yet.
+            if (!_mpClient.IsConnected && !_mpClient.IsReconnecting)
+            {
+                await Task.Delay(2000);
+                if (_mpClient.IsConnected)
+                    await _mpClient.SendGameActionAsync(payload);
+            }
         }
 
         private void TriggerAiLaunchLocal(string attackerName, string targetName, int salvo, long damage, double? lat = null, double? lng = null)
