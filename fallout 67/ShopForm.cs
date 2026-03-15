@@ -147,9 +147,12 @@ namespace fallover_67
                 gridPanel.Controls.Add(CreateCard("Industrial Complex", "Increases national output.\nUnlocks submarine tech.", 2500, 
                     () => GameEngine.Player.IndustryLevel++, GameEngine.Player.IndustryLevel, 5, "0xI1"));
 
+                gridPanel.Controls.Add(CreateCard("Cyber Warfare", "Hack enemy defense networks.\nHijack or self-nuke targets.", 3000,
+                    () => GameEngine.Player.CyberOpsLevel++, GameEngine.Player.CyberOpsLevel, 2, "0xC1"));
+
                 if (GameEngine.Player.IndustryLevel >= 2)
                 {
-                    gridPanel.Controls.Add(CreateCard("Nuclear Sub", "Stealth nuclear platform.\nSpawns in Arctic waters.", 1200, 
+                    gridPanel.Controls.Add(CreateCard("Nuclear Sub", "Stealth nuclear platform.\nSpawns in Arctic waters.", 1200,
                         () => BuySubmarine(), 0, 0, "0xS1"));
                 }
             }

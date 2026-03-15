@@ -5,6 +5,59 @@ using System.Drawing;
 
 namespace fallover_67
 {
+    // ── Strategic Layer Data ─────────────────────────────────────────────────
+    public enum ResourceType { Oil, Uranium, RareEarth, Agriculture }
+    public enum SanctionType { Trade, Arms, Full }
+    public enum SpyMissionType { Intel, Sabotage, StealMoney, DelayLaunch }
+    public enum UNResolutionType { Ceasefire, Sanctions, NoFirstStrike, NuclearFreeze, HumanitarianAid }
+    public enum UNVote { Yes, No, Abstain, Veto }
+
+    public class NaturalResource
+    {
+        public ResourceType Type { get; set; }
+        public int OutputPerTick { get; set; }  // money generated per income tick
+        public bool IsDestroyed { get; set; }   // nuked into oblivion
+    }
+
+    public class Sanction
+    {
+        public string ImposedBy { get; set; }    // nation name
+        public string Target { get; set; }       // nation name
+        public SanctionType Type { get; set; }
+        public int TicksRemaining { get; set; }  // auto-expires
+    }
+
+    public class Spy
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string TargetNation { get; set; }
+        public SpyMissionType Mission { get; set; }
+        public int TicksRemaining { get; set; }  // countdown to result
+        public bool IsActive { get; set; } = true;
+        public bool IsRevealed { get; set; }     // caught by counter-intel
+    }
+
+    public class UNResolution
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public UNResolutionType Type { get; set; }
+        public string ProposedBy { get; set; }
+        public string? TargetNation { get; set; }  // for sanctions/ceasefire targets
+        public Dictionary<string, UNVote> Votes { get; set; } = new();
+        public bool IsActive { get; set; }         // passed and in effect
+        public bool IsVoting { get; set; }         // currently being voted on
+        public int VotingTicksLeft { get; set; }   // ticks until vote concludes
+        public int EffectTicksLeft { get; set; }   // ticks until resolution expires
+    }
+
+    // P5 Security Council members with veto power
+    public static class UNConstants
+    {
+        public static readonly HashSet<string> P5Members = new() { "USA", "Russia", "China", "UK", "France" };
+        public const int VotingDuration = 15;    // ticks to vote
+        public const int ResolutionDuration = 60; // ticks active
+    }
+
     // ── Diplomacy Data ──────────────────────────────────────────────────────
     public enum SummitPhase { FlyingToSummit, InSummit, Returning }
     public enum SummitOutcome { Accepted, Rejected }
@@ -72,6 +125,17 @@ namespace fallover_67
 
         public int IndustryLevel { get; set; } = 1;
 
+        // Economy & Resources
+        public List<NaturalResource> Resources { get; set; } = new();
+        public bool IsSanctioned { get; set; } = false;    // under any active sanctions
+        public float IncomeMultiplier { get; set; } = 1.0f; // modified by trade routes, sanctions, nuclear winter
+
+        // Cyber warfare — when hacked, another player temporarily controls this nation
+        public string? HackedBy { get; set; } = null;           // nation name of hacker (null = not hacked)
+        public DateTime HackedUntil { get; set; } = DateTime.MinValue;
+        public bool IsHacked => HackedBy != null && DateTime.Now < HackedUntil;
+        public DateTime CyberDefenseStarted { get; set; } = DateTime.MinValue; // AI starts defending after 15s
+
         public Nation(string name, long pop, int nukes, int difficulty, long money, float x, float y, float scoreMultiplier = 1.0f)
         {
             Name = name;
@@ -120,6 +184,20 @@ namespace fallover_67
         public int BetrayalCooldown { get; set; } = 0;
         public int MaxAllies { get; set; } = 3;
         public int DiplomacyCooldown { get; set; } = 0;  // ticks until next summit attempt
+
+        // Economy & Strategic
+        public List<NaturalResource> Resources { get; set; } = new();
+        public float IncomeMultiplier { get; set; } = 1.0f;
+        public List<Spy> ActiveSpies { get; set; } = new();
+        public int SpyCooldown { get; set; } = 0;
+        public int UNCooldown { get; set; } = 0;  // ticks until next resolution proposal
+
+        // Cyber warfare
+        public int CyberOpsLevel { get; set; } = 0;          // 0=none, 1=basic scan, 2=full hack capability
+        public string? HackedTarget { get; set; } = null;     // nation currently hijacked
+        public DateTime HackedTargetUntil { get; set; } = DateTime.MinValue;
+        public bool IsHacking => HackedTarget != null && DateTime.Now < HackedTargetUntil;
+        public int HackCooldown { get; set; } = 0;            // ticks until next hack attempt
     }
 
     public class Submarine
@@ -160,6 +238,15 @@ namespace fallover_67
         public static List<TroopMission> ActiveMissions = new List<TroopMission>();
         public static List<Submarine> Submarines = new List<Submarine>();
         public static List<SummitFlight> ActiveSummits = new List<SummitFlight>();
+
+        // Strategic Layer
+        public static List<Sanction> ActiveSanctions = new List<Sanction>();
+        public static List<UNResolution> UNResolutions = new List<UNResolution>();
+        public static int GlobalNukesFired { get; set; } = 0;       // total across ALL nations
+        public static bool NuclearWinterActive { get; set; } = false;
+        public static int NuclearWinterTick { get; set; } = 0;       // ticks since winter began
+        public static float NuclearWinterSeverity { get; set; } = 0f; // 0-1, ramps up over time
+        public const int NuclearWinterThreshold = 40;                 // nukes before winter starts
 
         // When false, only nations with population ≥ 5,000,000 are included as AI opponents.
         // Set by LobbyForm before calling InitializeWorld.
@@ -231,6 +318,12 @@ namespace fallover_67
             ActiveMissions.Clear();
             Submarines.Clear();
             ActiveSummits.Clear();
+            ActiveSanctions.Clear();
+            UNResolutions.Clear();
+            GlobalNukesFired = 0;
+            NuclearWinterActive = false;
+            NuclearWinterTick = 0;
+            NuclearWinterSeverity = 0f;
             Player = new PlayerState();
 
             var rawNations = BuildRawNations();
@@ -263,6 +356,9 @@ namespace fallover_67
                     n.Diplomacy.AllianceAge[allyName] = 0;
             }
 
+            // Assign natural resources based on real-world resource distribution
+            AssignNationalResources(rnd);
+
             // Extract Player — copy chosen nation's data into PlayerState and remove from AI pool
             var chosen = Nations[playerChoice];
             Player.NationName = chosen.Name;
@@ -275,6 +371,62 @@ namespace fallover_67
             Player.ScoreMultiplier = chosen.ScoreMultiplier;
 
             Nations.Remove(playerChoice);
+            AssignPlayerResources(playerChoice, rnd);
+        }
+
+        private static void AssignNationalResources(Random rnd)
+        {
+            // Oil-rich nations
+            var oilNations = new HashSet<string> { "Saudi Arabia", "Russia", "USA", "Iran", "Iraq", "Libya", "Kazakhstan", "Turkmenistan", "Brazil", "Canada", "Nigeria" };
+            // Uranium producers
+            var uraniumNations = new HashSet<string> { "Kazakhstan", "Canada", "Australia", "Russia", "USA", "Uzbekistan", "South Africa" };
+            // Rare earth / tech hubs
+            var techNations = new HashSet<string> { "China", "Japan", "South Korea", "Taiwan", "Germany", "USA" };
+            // Agricultural powerhouses
+            var agriNations = new HashSet<string> { "USA", "China", "India", "Brazil", "Argentina", "France", "Indonesia", "Ukraine", "Ethiopia", "Vietnam" };
+
+            foreach (var n in Nations.Values)
+            {
+                if (oilNations.Contains(n.Name))
+                    n.Resources.Add(new NaturalResource { Type = ResourceType.Oil, OutputPerTick = 40 + rnd.Next(60) });
+                if (uraniumNations.Contains(n.Name))
+                    n.Resources.Add(new NaturalResource { Type = ResourceType.Uranium, OutputPerTick = 20 + rnd.Next(30) });
+                if (techNations.Contains(n.Name))
+                    n.Resources.Add(new NaturalResource { Type = ResourceType.RareEarth, OutputPerTick = 30 + rnd.Next(40) });
+                if (agriNations.Contains(n.Name))
+                    n.Resources.Add(new NaturalResource { Type = ResourceType.Agriculture, OutputPerTick = 15 + rnd.Next(25) });
+
+                // Everyone gets at least one small resource
+                if (n.Resources.Count == 0)
+                    n.Resources.Add(new NaturalResource { Type = ResourceType.Agriculture, OutputPerTick = 10 + rnd.Next(15) });
+            }
+
+            // Copy resources to player
+            var chosenResources = Nations.Values.FirstOrDefault()?.Resources; // fallback
+            // Look up in the raw data what the player's nation would have had
+            foreach (var n in Nations.Values)
+            {
+                // Resources already assigned above; player gets resources based on their nation name
+            }
+        }
+
+        public static void AssignPlayerResources(string nationName, Random rnd)
+        {
+            var oilNations = new HashSet<string> { "Saudi Arabia", "Russia", "USA", "Iran", "Iraq", "Libya", "Kazakhstan", "Turkmenistan", "Brazil", "Canada", "Nigeria" };
+            var uraniumNations = new HashSet<string> { "Kazakhstan", "Canada", "Australia", "Russia", "USA", "Uzbekistan", "South Africa" };
+            var techNations = new HashSet<string> { "China", "Japan", "South Korea", "Taiwan", "Germany", "USA" };
+            var agriNations = new HashSet<string> { "USA", "China", "India", "Brazil", "Argentina", "France", "Indonesia", "Ukraine", "Ethiopia", "Vietnam" };
+
+            if (oilNations.Contains(nationName))
+                Player.Resources.Add(new NaturalResource { Type = ResourceType.Oil, OutputPerTick = 40 + rnd.Next(60) });
+            if (uraniumNations.Contains(nationName))
+                Player.Resources.Add(new NaturalResource { Type = ResourceType.Uranium, OutputPerTick = 20 + rnd.Next(30) });
+            if (techNations.Contains(nationName))
+                Player.Resources.Add(new NaturalResource { Type = ResourceType.RareEarth, OutputPerTick = 30 + rnd.Next(40) });
+            if (agriNations.Contains(nationName))
+                Player.Resources.Add(new NaturalResource { Type = ResourceType.Agriculture, OutputPerTick = 15 + rnd.Next(25) });
+            if (Player.Resources.Count == 0)
+                Player.Resources.Add(new NaturalResource { Type = ResourceType.Agriculture, OutputPerTick = 10 + rnd.Next(15) });
         }
 
         public static List<string> GetAllCountryNames(bool hardMode = false)

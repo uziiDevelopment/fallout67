@@ -57,8 +57,22 @@ See `server/AGENTS.md` for detailed Cloudflare Workers documentation and API lim
 | `ControlPanelForm.cs` | Main game UI — map rendering, animations, event wiring, MP action send/receive |
 | `ShopForm.cs` | Black market upgrade shop |
 | `IronDomeForm.cs` | Click-to-intercept missile minigame; result (`InterceptedCount / TotalMissiles`) replaces the passive dome roll |
+| `PlaneInterceptForm.cs` | Click-to-intercept aircraft minigame |
+| `SubmarineControlForm.cs` | Submarine strike/management UI |
+| `DiplomacyEngine.cs` | Diplomacy logic (trade deals, sanctions, alliance proposals) |
+| `DiplomacyMinigameForm.cs` | Interactive diplomacy negotiation minigame |
+| `VisualStrikePlannerForm.cs` | Pre-strike targeting planner UI |
+| `CountryCoordinates.cs` | GMap.NET lat/lng coordinates for all nations (extracted from `ControlPanelForm.CorrectCountryCoordinates()`) |
+| `PlayerProfile.cs` | Persistent player profile data model; serialized to local JSON |
+| `ProfileForm.cs` | Profile creation/edit UI |
+| `ViewProfileForm.cs` | Profile viewer UI |
+| `PlayerListForm.cs` | In-lobby player list display |
+| `DevPanelForm.cs` | Developer debug panel (cheat/test tools) |
+| `CameraShake.cs` | Camera shake effect helper for explosions |
 | `GameOverForm.cs` | Victory/defeat screen — computes score breakdown and submits to `POST /api/score`; shows global leaderboard inline |
 | `LeaderboardForm.cs` | Standalone leaderboard viewer (fetches `GET /api/leaderboard`) |
+
+`ControlPanelForm` is split into multiple partial-class files: `ControlPanelForm.cs` (core), `ControlPanelForm.Rendering.cs`, `ControlPanelForm.Strikes.cs`, `ControlPanelForm.Multiplayer.cs`, `ControlPanelForm.Diplomacy.cs`, `ControlPanelForm.SatelliteStrike.cs`, `ControlPanelForm.WorldEvents.cs`.
 
 `Form1.cs` / `Form1.Designer.cs` are unused scaffolding.
 

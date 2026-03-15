@@ -165,6 +165,22 @@ namespace fallover_67
                     case "diplomacy_alliance": HandleRemoteDiplomacyAlliance(action); break;
                     case "diplomacy_betrayal": HandleRemoteDiplomacyBetrayal(action); break;
 
+                    // Cyber Ops
+                    case "hack_hijack":
+                    case "hack_end":
+                    case "hack_selfnuke":
+                    case "hack_strike":
+                    case "hack_failed":
+                    case "hack_defended":
+                        HandleRemoteHack(type, action, senderName); break;
+
+                    // Strategic Layer
+                    case "sanction":
+                    case "un_propose":
+                    case "spy_result":
+                    case "spy_deploy":
+                        HandleRemoteStrategicAction(action); break;
+
                     default:
                         // Unknown action type — ignore gracefully
                         break;

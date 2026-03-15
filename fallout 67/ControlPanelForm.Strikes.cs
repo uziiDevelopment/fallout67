@@ -15,6 +15,13 @@ namespace fallover_67
         {
             if (string.IsNullOrEmpty(selectedTarget) || cmbWeapon.SelectedItem == null) return;
 
+            // If in hijack mode, fire the hijacked nation's weapons instead
+            if (_isHijacking && _hijackedNation != null)
+            {
+                _ = FireHijackedSalvo(selectedTarget);
+                return;
+            }
+
             if (GameEngine.Player.IsSatelliteBlind)
             {
                 MessageBox.Show("SATELLITE UPLINK OFFLINE — Target lock cannot be established.", "SYSTEM ERROR", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -27,6 +34,27 @@ namespace fallover_67
                 int remaining = (int)Math.Ceiling(LaunchCooldownSeconds - cooldownLeft);
                 MessageBox.Show($"LAUNCH COOLDOWN ACTIVE — {remaining}s remaining.", "SYSTEMS RECHARGING");
                 return;
+            }
+
+            // UN Resolution violation check
+            if (StrategicEngine.IsResolutionActive(UNResolutionType.Ceasefire))
+            {
+                var result = MessageBox.Show("A UN CEASEFIRE is active. Launching will enrage all nations.\n\nProceed anyway?",
+                    "CEASEFIRE VIOLATION", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (result == DialogResult.No) return;
+
+                // Anger penalty for violating ceasefire
+                foreach (var n in GameEngine.Nations.Values)
+                    if (!n.IsDefeated) n.AngerLevel = Math.Min(10, n.AngerLevel + StrategicEngine.GetAngerPenaltyForViolation(UNResolutionType.Ceasefire));
+                logBox.SelectionColor = redText;
+                LogMsg("[UN VIOLATION] You have violated the UN Ceasefire! Global anger rising!");
+            }
+            if (StrategicEngine.IsResolutionActive(UNResolutionType.NuclearFreeze))
+            {
+                foreach (var n in GameEngine.Nations.Values)
+                    if (!n.IsDefeated) n.AngerLevel = Math.Min(10, n.AngerLevel + StrategicEngine.GetAngerPenaltyForViolation(UNResolutionType.NuclearFreeze));
+                logBox.SelectionColor = amberText;
+                LogMsg("[UN VIOLATION] Nuclear launch detected during NUCLEAR FREEZE resolution!");
             }
 
             int weaponIndex = cmbWeapon.SelectedIndex;
@@ -549,7 +577,7 @@ namespace fallover_67
 
         private void CheckSubmarineCasualties(PointLatLng pos, float radius)
         {
-            foreach (var sub in GameEngine.Submarines)
+            foreach (var sub in GameEngine.Submarines.ToList())
             {
                 if (sub.IsDestroyed) continue;
                 float dx = (float)(sub.MapX - pos.Lng);

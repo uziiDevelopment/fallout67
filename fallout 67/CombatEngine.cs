@@ -49,11 +49,16 @@ namespace fallover_67
             if (weaponIndex == 2) weaponName = "BIO-PLAGUE";
             if (weaponIndex == 3) weaponName = "ORBITAL LASER";
 
+            GameEngine.GlobalNukesFired++;
             result.Logs.Add($"[STRIKE INITIATED] Payload: {weaponName} -> Destination: {target.Name.ToUpper()}");
 
             long casualties = Math.Min(forcedCasualties, target.Population);
             target.Population -= casualties;
             result.Logs.Add($"[IMPACT] Confirming hits. Est. Enemy Casualties: {casualties:N0}");
+
+            // Collateral damage: strikes can destroy resources (oil, uranium, etc.)
+            string? collateralMsg = StrategicEngine.OnNationStruck(targetName, weaponIndex);
+            if (collateralMsg != null) result.Logs.Add(collateralMsg);
 
             if (weaponIndex == 3)
             {
@@ -107,11 +112,15 @@ namespace fallover_67
         // Finds nations that will retaliate — damage is NOT applied here; the animated missile does it
         private static void CollectRetaliators(Nation primaryTarget, StrikeResult result)
         {
-            // Primary target retaliation check
+            // Primary target retaliation check — gated by military readiness
             if (!primaryTarget.IsDefeated && !primaryTarget.IsHumanControlled && primaryTarget.Nukes > 0)
             {
                 // Chance scaled by anger level (0.3 base + up to 0.7 from anger)
                 double baseChance = 0.3 + (primaryTarget.AngerLevel * 0.07);
+
+                // Military readiness reduces retaliation chance (broke/sanctioned = can't fire back)
+                baseChance *= StrategicEngine.GetMilitaryReadiness(primaryTarget);
+
                 if (rng.NextDouble() < baseChance)
                     result.Retaliators.Add(primaryTarget.Name);
             }
@@ -120,15 +129,17 @@ namespace fallover_67
             int allyCount = 0;
             foreach (string allyName in primaryTarget.Allies)
             {
-                if (allyCount >= 2) break; // Maximum 2 allies will jump in per individual strike
+                if (allyCount >= 2) break;
 
                 if (GameEngine.Nations.TryGetValue(allyName, out Nation ally) && !ally.IsDefeated && !ally.IsHumanControlled && ally.Nukes > 0)
                 {
-                    // Allies are more hesitant (20% base + scale by anger)
                     double allyInvolvementChance = 0.2 + (ally.AngerLevel * 0.04);
-                    
-                    // Survival Instinct: If population is low (<20%), AI is 80% less likely to retaliate further
+
+                    // Survival Instinct
                     if ((double)ally.Population / ally.MaxPopulation < 0.2) allyInvolvementChance *= 0.2;
+
+                    // Military readiness — sanctioned/broke allies can't help
+                    allyInvolvementChance *= StrategicEngine.GetMilitaryReadiness(ally);
 
                     if (rng.NextDouble() < allyInvolvementChance)
                     {
@@ -207,7 +218,7 @@ namespace fallover_67
         public static List<Submarine> TriggerSubmarineRetaliation(float targetLat, float targetLng, string attackerName)
         {
             var firingSubs = new List<Submarine>();
-            foreach (var sub in GameEngine.Submarines)
+            foreach (var sub in GameEngine.Submarines.ToList())
             {
                 if (sub.OwnerId == GameEngine.Player.NationName && !sub.IsDestroyed && sub.NukeCount > 0)
                 {
@@ -348,7 +359,7 @@ namespace fallover_67
             // radiusScale of 1.0 is ~5 degrees of radius
             float threshold = 5.0f * radiusScale;
 
-            foreach (var sub in GameEngine.Submarines)
+            foreach (var sub in GameEngine.Submarines.ToList())
             {
                 if (sub.IsDestroyed) continue;
 

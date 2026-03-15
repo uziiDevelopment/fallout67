@@ -116,7 +116,7 @@ namespace fallover_67
                 }
 
                 // --- SUBMARINE MOVEMENT ---
-                foreach (var sub in GameEngine.Submarines)
+                foreach (var sub in GameEngine.Submarines.ToList())
                 {
                     if (sub.IsMoving && !sub.IsDestroyed && sub.Waypoints != null && sub.Waypoints.Count > 0)
                     {
@@ -142,9 +142,10 @@ namespace fallover_67
                 }
 
                 // --- SUMMIT PLANE MOVEMENT ---
-                for (int i = GameEngine.ActiveSummits.Count - 1; i >= 0; i--)
+                var summitsCopy = GameEngine.ActiveSummits.ToList();
+                for (int i = summitsCopy.Count - 1; i >= 0; i--)
                 {
-                    var flight = GameEngine.ActiveSummits[i];
+                    var flight = summitsCopy[i];
                     if (flight.ShotDown) { GameEngine.ActiveSummits.RemoveAt(i); continue; }
 
                     if (flight.Phase == SummitPhase.InSummit)
@@ -209,6 +210,9 @@ namespace fallover_67
 
             // 1. Terminal Green Tint
             g.FillRectangle(_tintBrush, 0, 0, w, h);
+
+            // 1b. Nuclear Winter overlay (darkened sky + snow)
+            RenderNuclearWinterOverlay(g, w, h);
 
             // 2. STATIC GRID (Lat/Lng mapped so it sticks and zooms with the world map)
             for (int lat = -85; lat <= 85; lat += 10)
@@ -405,7 +409,7 @@ namespace fallover_67
                 }
 
                 // --- SUBMARINES ---
-                foreach (var sub in GameEngine.Submarines)
+                foreach (var sub in GameEngine.Submarines.ToList())
                 {
                     bool isOwner = sub.OwnerId == GameEngine.Player.NationName;
                     bool isRevealed = sub.IsRevealed;
@@ -435,7 +439,7 @@ namespace fallover_67
             // --- SUMMIT PLANES ---
             lock (_animLock)
             {
-                foreach (var flight in GameEngine.ActiveSummits)
+                foreach (var flight in GameEngine.ActiveSummits.ToList())
                 {
                     if (flight.ShotDown) continue;
 
@@ -730,7 +734,7 @@ namespace fallover_67
                 }
 
                 // Check if we clicked a submarine
-                foreach (var sub in GameEngine.Submarines)
+                foreach (var sub in GameEngine.Submarines.ToList())
                 {
                     PointF subSc = ToScreenPoint(new PointLatLng(sub.MapY, sub.MapX));
                     float ddx = subSc.X - e.X, ddy = subSc.Y - e.Y;
@@ -755,7 +759,7 @@ namespace fallover_67
                 // Check if we clicked a summit plane (for intercept)
                 lock (_animLock)
                 {
-                    foreach (var flight in GameEngine.ActiveSummits)
+                    foreach (var flight in GameEngine.ActiveSummits.ToList())
                     {
                         if (flight.ShotDown || flight.IsPlayerInitiated || flight.IsPlayerPlane) continue;
                         if (flight.Phase != SummitPhase.FlyingToSummit && flight.Phase != SummitPhase.Returning) continue;

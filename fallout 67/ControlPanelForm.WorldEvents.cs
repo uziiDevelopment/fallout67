@@ -157,37 +157,36 @@ namespace fallover_67
 
             if (!_isMultiplayer || (_mpClient != null && _mpClient.IsHost))
             {
-                // De-escalation: Target nation retaliation roll
-                if (!target.IsDefeated && !target.IsHumanControlled && target.Nukes > 0)
+                // De-escalation: Target nation retaliation roll — gated by military readiness
+                if (!target.IsDefeated && !target.IsHumanControlled && StrategicEngine.CanNationAffordLaunch(target))
                 {
-                    // Chance scaled by anger level (0.4 base + up to 0.4 from anger)
                     double retChance = 0.4 + (target.AngerLevel * 0.04);
-                    // Survival Instinct check: Panic decreases retaliation chance if decimated
                     if ((double)target.Population / target.MaxPopulation < 0.15) retChance *= 0.3;
+                    retChance *= StrategicEngine.GetMilitaryReadiness(target);
 
                     if (rng.NextDouble() < retChance)
                     {
-                        await Task.Delay(rng.Next(800, 3000)); // Variable delay to make it feel organic
+                        await Task.Delay(rng.Next(800, 3000));
                         if (!target.IsDefeated && !attacker.IsDefeated) BroadcastAiLaunch(target, attacker.Name, 1);
                     }
                 }
 
-                // Limited Alliance Intervention
-                int maxAllyHits = 1; 
+                // Limited Alliance Intervention — allies need readiness too
+                int maxAllyHits = 1;
                 foreach (string allyName in target.Allies)
                 {
                     if (maxAllyHits <= 0) break;
                     if (!GameEngine.Nations.TryGetValue(allyName, out Nation targetAlly)) continue;
-                    
-                    if (targetAlly.IsDefeated || targetAlly.IsHumanControlled || targetAlly.Nukes <= 0) continue;
-                    
-                    // MUCH lower chance for AI to jump into a proxy war (15% base + anger)
+
+                    if (targetAlly.IsDefeated || targetAlly.IsHumanControlled || !StrategicEngine.CanNationAffordLaunch(targetAlly)) continue;
+
                     double allyEntryChance = 0.15 + (targetAlly.AngerLevel * 0.03);
-                    if (attacker.Allies.Contains(allyName)) allyEntryChance *= 0.1; // Shared ally — very likely to stay neutral
-                    
+                    if (attacker.Allies.Contains(allyName)) allyEntryChance *= 0.1;
+                    allyEntryChance *= StrategicEngine.GetMilitaryReadiness(targetAlly);
+
                     if (rng.NextDouble() < allyEntryChance)
                     {
-                        await Task.Delay(rng.Next(2000, 5000)); // Allies take longer to mobilize
+                        await Task.Delay(rng.Next(2000, 5000));
                         if (!targetAlly.IsDefeated && !attacker.IsDefeated)
                         {
                             BroadcastAiLaunch(targetAlly, attacker.Name, 1);
@@ -199,8 +198,9 @@ namespace fallover_67
                 foreach (string allyName in attacker.Allies)
                 {
                     if (!GameEngine.Nations.TryGetValue(allyName, out Nation attackerAlly)) continue;
-                    if (attackerAlly.IsDefeated || attackerAlly.IsHumanControlled || attackerAlly.Nukes <= 0 || rng.NextDouble() >= 0.30) continue;
-                    if (target.Allies.Contains(allyName)) continue; // shared ally — won't fire on its own ally
+                    if (attackerAlly.IsDefeated || attackerAlly.IsHumanControlled || !StrategicEngine.CanNationAffordLaunch(attackerAlly)) continue;
+                    if (target.Allies.Contains(allyName)) continue;
+                    if (rng.NextDouble() >= 0.30 * StrategicEngine.GetMilitaryReadiness(attackerAlly)) continue;
 
                     await Task.Delay(700 + rng.Next(500));
                     if (!attackerAlly.IsDefeated && !target.IsDefeated)
@@ -227,18 +227,18 @@ namespace fallover_67
             {
                 playerAttackTick = 0;
                 // Hostiles can target ANY human player now
-                var hostiles = GameEngine.Nations.Values.Where(n => !n.IsDefeated && n.IsHostileToPlayer && n.Nukes > 0 && !n.IsHumanControlled).ToList();
+                // Only nations that can AFFORD to launch will attack (economy/sanctions/ceasefire gate)
+                var hostiles = GameEngine.Nations.Values.Where(n => !n.IsDefeated && n.IsHostileToPlayer && !n.IsHumanControlled && StrategicEngine.CanNationAffordLaunch(n)).ToList();
                 if (hostiles.Count > 0)
                 {
                     Nation a = hostiles[rng.Next(hostiles.Count)];
                     if (rng.NextDouble() < 0.15 + a.Difficulty * 0.05)
                     {
-                        // Pick a random human target (local or remote)
                         var playerNations = GameEngine.Nations.Values.Where(n => n.IsHumanControlled).Select(n => n.Name).ToList();
                         playerNations.Add(GameEngine.Player.NationName);
                         string randomPlayer = playerNations[rng.Next(playerNations.Count)];
 
-                        int salvo = Math.Min(1 + rng.Next(0, a.AngerLevel / 3 + 1), a.Nukes);
+                        int salvo = Math.Min(StrategicEngine.GetMaxSalvoSize(a), a.Nukes);
                         BroadcastAiLaunch(a, randomPlayer, salvo);
                     }
                 }
@@ -254,7 +254,8 @@ namespace fallover_67
 
                 if (rng.NextDouble() > 0.45) return; // More frequent: 0.3 -> 0.45
 
-                var attackers = GameEngine.Nations.Values.Where(n => !n.IsDefeated && n.Nukes > 0 && !n.IsHumanControlled).ToList();
+                // Only nations with military readiness can start wars
+                var attackers = GameEngine.Nations.Values.Where(n => !n.IsDefeated && !n.IsHumanControlled && StrategicEngine.CanNationAffordLaunch(n)).ToList();
                 if (attackers.Count == 0) return;
 
                 Nation attacker = attackers[rng.Next(attackers.Count)];
@@ -269,7 +270,7 @@ namespace fallover_67
                 double playerChance = attacker.IsHostileToPlayer ? 0.35 : 0.15; // Higher chances
                 bool hitPlayer = rng.NextDouble() < playerChance;
 
-                int nvnSalvo = Math.Min(1 + rng.Next(0, attacker.AngerLevel / 4 + 1), attacker.Nukes);
+                int nvnSalvo = Math.Min(StrategicEngine.GetMaxSalvoSize(attacker), attacker.Nukes);
                 
                 if (hitPlayer)
                 {
@@ -286,7 +287,7 @@ namespace fallover_67
                 // SUBMARINE HUNTER: AI nations sweep oceans if player is in 'Last Stand'
                 if (GameEngine.Player.Population <= 0)
                 {
-                    foreach (var sub in GameEngine.Submarines)
+                    foreach (var sub in GameEngine.Submarines.ToList())
                     {
                         if (sub.OwnerId == GameEngine.Player.NationName && !sub.IsDestroyed)
                         {
@@ -344,11 +345,9 @@ namespace fallover_67
                 }
             }
 
-            if (angerDecayTick % 10 == 0)
-            {
-                GameEngine.Player.Money += (GameEngine.Player.IndustryLevel * 50);
-                RefreshData();
-            }
+            // Strategic layer tick (economy, spies, UN, nuclear winter)
+            TickStrategicLayer();
+            RefreshData();
 
             TryTriggerWorldEvents();
             TickDiplomacy();

@@ -150,7 +150,7 @@ namespace fallover_67
         private SizeF _cachedHintSize;
 
         // ── Game state machine ───────────────────────────────────────────────
-        private enum GameState { Playing, IronDomeMinigame, PlaneIntercept }
+        private enum GameState { Playing, IronDomeMinigame, PlaneIntercept, CyberOpsMinigame }
         private volatile GameState _gameState = GameState.Playing;
 
         // Tracks every enemy missile currently in flight toward the player
@@ -226,6 +226,8 @@ namespace fallover_67
 
             SetupUI();
             CorrectCountryCoordinates(); // Assigns real Lat/Lng
+            SetupCyberOps();
+            SetupStrategicUI();
             RefreshData();
 
             gameTimer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -356,13 +358,16 @@ namespace fallover_67
             this.Controls.Add(grpPlayer);
 
             // ── Diplomacy Controls ──────────────────────────────────────────
-            GroupBox grpDiplomacy = CreateBox("DIPLOMACY", 10, 465, 800, 55);
+            GroupBox grpDiplomacy = CreateBox("DIPLOMACY & CYBER OPS", 10, 465, 800, 55);
             btnDiplomacy = CreateButton("PROPOSE ALLIANCE", 10, 18, 160, 30, Color.FromArgb(0, 50, 70), cyanText);
             btnDiplomacy.Click += BtnDiplomacy_Click;
             btnBetray = CreateButton("BETRAY ALLY", 180, 18, 130, 30, Color.FromArgb(70, 0, 0), Color.OrangeRed);
             btnBetray.Click += (s, e) => { if (!string.IsNullOrEmpty(selectedTarget) && GameEngine.Player.Allies.Contains(selectedTarget)) PlayerBetrayAlly(selectedTarget); else MessageBox.Show("Select an allied nation to betray.", "NO ALLY SELECTED"); };
+            btnHack = CreateButton("⚡ HACK NETWORK", 330, 18, 160, 30, Color.FromArgb(40, 0, 60), Color.Magenta);
+            btnHack.Click += BtnHack_Click;
             grpDiplomacy.Controls.Add(btnDiplomacy);
             grpDiplomacy.Controls.Add(btnBetray);
+            grpDiplomacy.Controls.Add(btnHack);
             this.Controls.Add(grpDiplomacy);
 
             GroupBox grpLogs = CreateBox("🔴 LIVE TACTICAL COMMENTARY", 10, 680, 1260, 185);
@@ -481,13 +486,21 @@ namespace fallover_67
             }
             else
             {
+                string resLine = StrategicEngine.GetResourceSummary(target.Resources);
+                string sanctionLine = target.IsSanctioned ? " [SANCTIONED]" : "";
+                float readiness = StrategicEngine.GetMilitaryReadiness(target);
+                string readinessLabel = readiness > 0.8f ? "COMBAT READY" :
+                                        readiness > 0.5f ? "DEGRADED" :
+                                        readiness > 0.3f ? "WEAKENED" : "CRIPPLED";
                 lblProfile.Text =
                     $"TARGET LOCK: {target.Name.ToUpper()}\n" +
                     $"=================================\n" +
                     $"POPULATION: {target.Population:N0}\n" +
                     $"NUKES DETECTED: {target.Nukes}\n" +
-                    $"EST. TREASURY: ${target.Money}M\n" +
-                    $"THREAT LEVEL: {new string('★', target.Difficulty)}\n\n" +
+                    $"EST. TREASURY: ${target.Money}M{sanctionLine}\n" +
+                    $"THREAT LEVEL: {new string('★', target.Difficulty)}\n" +
+                    $"READINESS: {readiness:P0} ({readinessLabel})\n" +
+                    $"RESOURCES: {resLine}\n" +
                     $"ALLIANCE NETWORK: {allies}\n" +
                     $"DIPLOMATIC STATUS: {rel}\n" +
                     $"COMBAT STATUS: {(target.IsDefeated ? "DEFEATED" : "ACTIVE")}\n" +
@@ -511,8 +524,17 @@ namespace fallover_67
                 : "ONLINE";
             int activeSubs = GameEngine.Submarines.Count(s => s.OwnerId == GameEngine.Player.NationName && !s.IsDestroyed);
             string subLine = activeSubs > 0 ? $" | SUBS: {activeSubs}" : "";
+            string cyberLine = GameEngine.Player.CyberOpsLevel > 0 ? $" | CYBER L{GameEngine.Player.CyberOpsLevel}" : "";
             string allyLine = $"({GameEngine.Player.Allies.Count}/{GameEngine.Player.MaxAllies})";
-            lblPlayerStats.Text = $"YOUR NATION: {GameEngine.Player.NationName}\nALLIES {allyLine}: {pa}\nPOPULATION:  {GameEngine.Player.Population:N0}\nTREASURY:    ${GameEngine.Player.Money:N0}M\nDEFENSES:    Dome L{GameEngine.Player.IronDomeLevel} | Bunk L{GameEngine.Player.BunkerLevel} | Vac L{GameEngine.Player.VaccineLevel}{subLine}\nSATELLITES:  {satStatus}";
+            lblPlayerStats.Text = $"YOUR NATION: {GameEngine.Player.NationName}\nALLIES {allyLine}: {pa}\nPOPULATION:  {GameEngine.Player.Population:N0}\nTREASURY:    ${GameEngine.Player.Money:N0}M\nDEFENSES:    Dome L{GameEngine.Player.IronDomeLevel} | Bunk L{GameEngine.Player.BunkerLevel} | Vac L{GameEngine.Player.VaccineLevel}{subLine}{cyberLine}\nSATELLITES:  {satStatus}";
+
+            // Hack button state
+            if (btnHack != null)
+            {
+                bool canHack = GameEngine.Player.CyberOpsLevel >= 2 && !_isHijacking && GameEngine.Player.HackCooldown <= 0 && !GameEngine.Player.IsSatelliteBlind;
+                btnHack.Enabled = canHack;
+                btnHack.Text = _isHijacking ? $"⚡ HIJACKING..." : GameEngine.Player.HackCooldown > 0 ? $"⚡ HACK ({GameEngine.Player.HackCooldown}s)" : "⚡ HACK NETWORK";
+            }
 
             int wi = cmbWeapon.SelectedIndex;
             cmbWeapon.Items.Clear();
