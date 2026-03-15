@@ -183,6 +183,7 @@ namespace fallover_67
                     logBox.SelectionColor = greenText;
                     LogMsg($"[DIPLOMACY] Alliance with {summit.Nation2.ToUpper()} is now ACTIVE! Resources will be shared.");
                     AddNotification("ALLIANCE FORMED", $"{summit.Nation2} is now your ally", Color.Cyan, 8f);
+                    ProfileManager.RecordAllianceFormed();
                 }
                 else
                 {
@@ -304,6 +305,7 @@ namespace fallover_67
             logBox.SelectionColor = redText;
             LogMsg($"[BETRAYAL] You have betrayed {allyName.ToUpper()}! Alliance dissolved. Trust shattered.");
             AddNotification("BETRAYAL", $"Alliance with {allyName} broken", Color.Red, 8f);
+            ProfileManager.RecordAllianceBroken();
 
             // Launch surprise strike
             if (GameEngine.Nations.ContainsKey(allyName))

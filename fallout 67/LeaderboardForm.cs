@@ -52,7 +52,7 @@ namespace fallover_67
 
             var colHdr = new Label
             {
-                Text      = "  RANK   SCORE             NAME             (NATION, TIME)",
+                Text      = "  RANK   SCORE             NAME             (NATION, TIME)       ADDED",
                 Location  = new Point(10, 58),
                 Size      = new Size(680, 22),
                 Font      = smallFont,
@@ -136,6 +136,7 @@ namespace fallover_67
                         Score     = e.GetProperty("score").GetInt64(),
                         Seconds   = e.TryGetProperty("seconds",   out var sv) ? sv.GetInt32() : 0,
                         NukesUsed = e.TryGetProperty("nukesUsed", out var nv) ? nv.GetInt32() : 0,
+                        Date      = e.TryGetProperty("date",      out var dv) ? dv.GetString() ?? "" : ""
                     });
                 }
 
@@ -151,7 +152,10 @@ namespace fallover_67
                         var e    = scores[i];
                         string t = $"{e.Seconds / 60}m{e.Seconds % 60:D2}s";
                         string medal = i == 0 ? "★" : i == 1 ? "▲" : i == 2 ? "●" : " ";
-                        _scoreList.Items.Add($"  {medal} #{i + 1,-3}  {e.Score,12:N0}   {e.Name,-14}  ({e.Nation}, {t})");
+                        string ago   = GetTimeAgo(e.Date);
+                        
+                        string txt = $"  {medal} #{i + 1,-3}  {e.Score,12:N0}   {e.Name,-14}  ({e.Nation}, {t})";
+                        _scoreList.Items.Add(txt.PadRight(60) + ago);
                     }
                     _statusLabel.Text = $"Showing top {scores.Count} commanders worldwide";
                 }
@@ -165,6 +169,20 @@ namespace fallover_67
             {
                 _refreshBtn.Enabled = true;
             }
+        }
+
+        private string GetTimeAgo(string dateString)
+        {
+            if (string.IsNullOrWhiteSpace(dateString)) return "";
+            if (DateTime.TryParse(dateString, out DateTime dt))
+            {
+                var span = DateTime.UtcNow - dt.ToUniversalTime();
+                if (span.TotalMinutes < 1) return "just now";
+                if (span.TotalHours < 1) return $"{(int)span.TotalMinutes}m ago";
+                if (span.TotalDays < 1) return $"{(int)span.TotalHours}h ago";
+                return $"{(int)span.TotalDays}d ago";
+            }
+            return dateString;
         }
     }
 }

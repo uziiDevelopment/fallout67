@@ -200,6 +200,7 @@ namespace fallover_67
             g.CompositingQuality = CompositingQuality.HighSpeed;
             g.InterpolationMode = InterpolationMode.Low;
             g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             int w = mapPanel.Width, h = mapPanel.Height;
 
             // ── Camera shake offset ──────────────────────────────────────────

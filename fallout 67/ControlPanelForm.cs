@@ -582,10 +582,15 @@ namespace fallover_67
             long nukePenalty = nukesUsed * 500;
             long rawScore    = Math.Max(0, baseScore + timeBonus - nukePenalty);
             long finalScore  = (long)(rawScore * countryMult);
-
-            string playerName = _mpClient?.Players.FirstOrDefault(p => p.Id == _mpClient.LocalPlayerId)?.Name ?? "COMMANDER";
+            string playerName = ProfileManager.HasProfile 
+                ? ProfileManager.CurrentProfile.Username 
+                : _mpClient?.Players.FirstOrDefault(p => p.Id == _mpClient.LocalPlayerId)?.Name ?? "COMMANDER";
 
             LogMsg($"[VICTORY] WORLD DOMINATION ACHIEVED! Final score: {finalScore:N0}");
+
+            // Record match result in profile
+            ProfileManager.RecordGameEnd(true, finalScore, elapsedSeconds, _isMultiplayer);
+            _ = ProfileManager.SyncToServerAsync(GetServerBaseUrl());
 
             var form = new GameOverForm(
                 victory: true,
@@ -596,15 +601,21 @@ namespace fallover_67
 
             form.Load += async (s, e) => await form.LoadAsync();
             form.ShowDialog(this);
-            Application.Exit();
+            this.Close();
         }
 
         private async Task HandleDefeatAsync()
         {
             int elapsedSeconds = (int)_gameTimer.Elapsed.TotalSeconds;
-            string playerName  = _mpClient?.Players.FirstOrDefault(p => p.Id == _mpClient.LocalPlayerId)?.Name ?? "COMMANDER";
+            string playerName = ProfileManager.HasProfile 
+                ? ProfileManager.CurrentProfile.Username 
+                : _mpClient?.Players.FirstOrDefault(p => p.Id == _mpClient.LocalPlayerId)?.Name ?? "COMMANDER";
 
             LogMsg("[DEFEAT] YOUR NATION HAS BEEN WIPED OUT.");
+
+            // Record defeat in profile
+            ProfileManager.RecordGameEnd(false, 0, elapsedSeconds, _isMultiplayer);
+            _ = ProfileManager.SyncToServerAsync(GetServerBaseUrl());
 
             var form = new GameOverForm(
                 victory: false,
@@ -616,7 +627,7 @@ namespace fallover_67
 
             form.Load += async (s, e) => await form.LoadAsync();
             form.ShowDialog(this);
-            Application.Exit();
+            this.Close();
         }
 
         private string GetServerBaseUrl() => _serverUrl;
@@ -631,6 +642,11 @@ namespace fallover_67
         {
             _renderRunning = false;
             _renderThread?.Join(200);
+
+            // Save all accumulated stats even if game wasn't finished
+            ProfileManager.FlushSession();
+            _ = ProfileManager.SyncToServerAsync(GetServerBaseUrl());
+
             base.OnFormClosing(e);
         }
 

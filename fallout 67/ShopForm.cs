@@ -259,6 +259,7 @@ namespace fallover_67
                 NukeCount = 0
             };
             GameEngine.Submarines.Add(sub);
+            ProfileManager.RecordSubmarineDeployed();
             WriteLog($"[ASSET DEPLOYED] {subName} is active in ARCTIC SECTOR.");
             
             // Broadcast creation

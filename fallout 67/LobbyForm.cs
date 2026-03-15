@@ -262,8 +262,17 @@ namespace fallover_67
                 });
             pnlMain.Controls.Add(btnLb);
 
+            var btnProfile = MakeMenuButton("PROFILE", "View your commander stats and career record",
+                centerX, startY + (btnH + gap) * 3, btnW, btnH, Color.FromArgb(0, 255, 200), () =>
+                {
+                    string url = txtServer?.Text.Trim() is { Length: > 0 } t ? t : ServerUrl;
+                    var pf = new ProfileForm(url);
+                    pf.ShowDialog(this);
+                });
+            pnlMain.Controls.Add(btnProfile);
+
             var btnQuit = MakeMenuButton("EXIT", "Terminate command session",
-                centerX, startY + (btnH + gap) * 3, btnW, btnH, termWarning,
+                centerX, startY + (btnH + gap) * 4, btnW, btnH, termWarning,
                 () => { this.DialogResult = DialogResult.Cancel; this.Close(); });
             pnlMain.Controls.Add(btnQuit);
 
@@ -273,7 +282,7 @@ namespace fallover_67
                 Text = "☢",
                 Font = new Font("Segoe UI Symbol", 60F, FontStyle.Regular),
                 ForeColor = Color.FromArgb(25, redGlow),
-                Location = new Point(centerX + btnW / 2 - 45, startY + (btnH + gap) * 4 + 10),
+                Location = new Point(centerX + btnW / 2 - 45, startY + (btnH + gap) * 5 + 10),
                 Size = new Size(100, 90),
                 BackColor = Color.Transparent,
                 TextAlign = ContentAlignment.MiddleCenter
@@ -388,7 +397,8 @@ namespace fallover_67
             };
 
             formBox.Controls.Add(MakeLabel("CALLSIGN:", 20, 35, 130, fontStd, amberText));
-            txtName = MakeTextBox(155, 32, 280, "Commander");
+            string defaultName = ProfileManager.HasProfile ? ProfileManager.CurrentProfile.Username : "Commander";
+            txtName = MakeTextBox(155, 32, 280, defaultName);
             formBox.Controls.Add(txtName);
 
             formBox.Controls.Add(MakeLabel("SERVER:", 20, 75, 130, fontStd, amberText));

@@ -11,7 +11,7 @@ namespace fallover_67
 
         public MainMenuForm()
         {
-            this.Text = "VAULT-TEC TERMINAL - CHOOSE YOUR NATION";
+            this.Text = "<MAD> TERMINAL - CHOOSE YOUR NATION";
             this.Size = new Size(500, 450);
             this.BackColor = Color.FromArgb(20, 25, 20);
             this.StartPosition = FormStartPosition.CenterScreen;

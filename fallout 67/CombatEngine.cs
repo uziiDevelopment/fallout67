@@ -316,6 +316,7 @@ namespace fallover_67
                 // Troops are lost — TroopCount was already deducted from player pop at launch
                 string troopLoss = mission.TroopCount > 0 ? $" {mission.TroopCount:N0} troops KIA." : "";
                 logCallback($"[MISSION FAILED] ⚠ Troops ambushed by {blockerName.ToUpper()} en route to {target.Name}!{troopLoss}", false);
+                ProfileManager.RecordTroopMission(false);
             }
             else
             {
@@ -338,6 +339,7 @@ namespace fallover_67
                 target.Population = 0;
 
                 logCallback($"[MISSION SUCCESS] Secured {target.Name.ToUpper()}! Recovered ${moneyGained}M, {nukesGained} Nukes, {popGained:N0} Citizens. ({extractPct}% extraction efficiency)", true);
+                ProfileManager.RecordTroopMission(true);
             }
         }
         public static void CheckSubmarineCollateral(float lat, float lng, float radiusScale, string attackerName)

@@ -3,6 +3,7 @@ import { DurableObject } from 'cloudflare:workers';
 export interface Env {
 	GAME_ROOMS: DurableObjectNamespace;
 	LEADERBOARD: DurableObjectNamespace;
+	PLAYER_PROFILES: DurableObjectNamespace;
 }
 
 interface Player {
@@ -293,7 +294,7 @@ export class Leaderboard extends DurableObject {
 				score: Math.max(0, Math.floor(Number(body.score) || 0)),
 				seconds: Math.max(0, Math.floor(Number(body.seconds) || 0)),
 				nukesUsed: Math.max(0, Math.floor(Number(body.nukesUsed) || 0)),
-				date: new Date().toISOString().substring(0, 10),
+				date: new Date().toISOString(),
 			};
 
 			const scores: ScoreEntry[] = (await this.ctx.storage.get<ScoreEntry[]>('scores')) ?? [];
@@ -310,6 +311,142 @@ export class Leaderboard extends DurableObject {
 		// GET — return the leaderboard
 		const scores: ScoreEntry[] = (await this.ctx.storage.get<ScoreEntry[]>('scores')) ?? [];
 		return new Response(JSON.stringify({ scores }), {
+			headers: { ...cors, 'Content-Type': 'application/json' },
+		});
+	}
+}
+
+// ── Player Profiles Durable Object ────────────────────────────────────────────
+interface PlayerProfileData {
+	Username: string;
+	CreatedAt: string;
+	LastPlayed: string;
+	MatchesPlayed: number;
+	MatchesWon: number;
+	MatchesLost: number;
+	TotalKills: number;
+	TotalNukesLaunched: number;
+	StandardNukesLaunched: number;
+	TsarBombasLaunched: number;
+	BioPlaguesLaunched: number;
+	OrbitalLasersFired: number;
+	SatelliteKillersUsed: number;
+	NationsConquered: number;
+	NationsSurrendered: number;
+	MissilesIntercepted: number;
+	DamageAbsorbed: number;
+	TroopMissionsLaunched: number;
+	TroopMissionsSucceeded: number;
+	TroopMissionsFailed: number;
+	AlliancesFormed: number;
+	AlliancesBroken: number;
+	SubmarinesDeployed: number;
+	SubmarineStrikesFired: number;
+	SubmarinesLost: number;
+	HighestScore: number;
+	TotalScoreEarned: number;
+	TotalPlayTimeSeconds: number;
+	LongestGameSeconds: number;
+	ShortestVictorySeconds: number;
+	MultiplayerGamesPlayed: number;
+	MultiplayerWins: number;
+	NationPlayCounts: Record<string, number>;
+}
+
+export class PlayerProfiles extends DurableObject {
+	async fetch(request: Request): Promise<Response> {
+		const cors = {
+			'Access-Control-Allow-Origin': '*',
+			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+			'Access-Control-Allow-Headers': 'Content-Type',
+		};
+
+		if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
+
+		const url = new URL(request.url);
+
+		if (request.method === 'POST') {
+			// Upsert a profile
+			let body: Partial<PlayerProfileData>;
+			try { body = await request.json(); } catch { return new Response('Bad JSON', { status: 400, headers: cors }); }
+
+			const username = String(body.Username ?? '').trim().substring(0, 24);
+			if (!username) return new Response('Missing Username', { status: 400, headers: cors });
+
+			const key = `profile:${username.toLowerCase()}`;
+			const profile: PlayerProfileData = {
+				Username: username,
+				CreatedAt: body.CreatedAt ?? new Date().toISOString(),
+				LastPlayed: body.LastPlayed ?? new Date().toISOString(),
+				MatchesPlayed: Math.max(0, Number(body.MatchesPlayed) || 0),
+				MatchesWon: Math.max(0, Number(body.MatchesWon) || 0),
+				MatchesLost: Math.max(0, Number(body.MatchesLost) || 0),
+				TotalKills: Math.max(0, Number(body.TotalKills) || 0),
+				TotalNukesLaunched: Math.max(0, Number(body.TotalNukesLaunched) || 0),
+				StandardNukesLaunched: Math.max(0, Number(body.StandardNukesLaunched) || 0),
+				TsarBombasLaunched: Math.max(0, Number(body.TsarBombasLaunched) || 0),
+				BioPlaguesLaunched: Math.max(0, Number(body.BioPlaguesLaunched) || 0),
+				OrbitalLasersFired: Math.max(0, Number(body.OrbitalLasersFired) || 0),
+				SatelliteKillersUsed: Math.max(0, Number(body.SatelliteKillersUsed) || 0),
+				NationsConquered: Math.max(0, Number(body.NationsConquered) || 0),
+				NationsSurrendered: Math.max(0, Number(body.NationsSurrendered) || 0),
+				MissilesIntercepted: Math.max(0, Number(body.MissilesIntercepted) || 0),
+				DamageAbsorbed: Math.max(0, Number(body.DamageAbsorbed) || 0),
+				TroopMissionsLaunched: Math.max(0, Number(body.TroopMissionsLaunched) || 0),
+				TroopMissionsSucceeded: Math.max(0, Number(body.TroopMissionsSucceeded) || 0),
+				TroopMissionsFailed: Math.max(0, Number(body.TroopMissionsFailed) || 0),
+				AlliancesFormed: Math.max(0, Number(body.AlliancesFormed) || 0),
+				AlliancesBroken: Math.max(0, Number(body.AlliancesBroken) || 0),
+				SubmarinesDeployed: Math.max(0, Number(body.SubmarinesDeployed) || 0),
+				SubmarineStrikesFired: Math.max(0, Number(body.SubmarineStrikesFired) || 0),
+				SubmarinesLost: Math.max(0, Number(body.SubmarinesLost) || 0),
+				HighestScore: Math.max(0, Number(body.HighestScore) || 0),
+				TotalScoreEarned: Math.max(0, Number(body.TotalScoreEarned) || 0),
+				TotalPlayTimeSeconds: Math.max(0, Number(body.TotalPlayTimeSeconds) || 0),
+				LongestGameSeconds: Math.max(0, Number(body.LongestGameSeconds) || 0),
+				ShortestVictorySeconds: Number(body.ShortestVictorySeconds) || 2147483647,
+				MultiplayerGamesPlayed: Math.max(0, Number(body.MultiplayerGamesPlayed) || 0),
+				MultiplayerWins: Math.max(0, Number(body.MultiplayerWins) || 0),
+				NationPlayCounts: (body.NationPlayCounts && typeof body.NationPlayCounts === 'object') ? body.NationPlayCounts : {},
+			};
+
+			await this.ctx.storage.put(key, profile);
+
+			return new Response(JSON.stringify({ ok: true }), {
+				headers: { ...cors, 'Content-Type': 'application/json' },
+			});
+		}
+
+		// GET — fetch a profile by name
+		const name = url.searchParams.get('name');
+		if (name) {
+			const key = `profile:${name.toLowerCase().trim()}`;
+			const profile = await this.ctx.storage.get<PlayerProfileData>(key);
+
+			if (!profile) {
+				return new Response(JSON.stringify({ error: 'Profile not found' }), {
+					status: 404,
+					headers: { ...cors, 'Content-Type': 'application/json' },
+				});
+			}
+
+			return new Response(JSON.stringify(profile), {
+				headers: { ...cors, 'Content-Type': 'application/json' },
+			});
+		}
+
+		// GET without ?name — list all profiles (for /api/profiles)
+		const allEntries = await this.ctx.storage.list<PlayerProfileData>({ prefix: 'profile:' });
+		const profiles: PlayerProfileData[] = [];
+		for (const [, value] of allEntries) {
+			profiles.push(value);
+		}
+		// Sort by highest score descending
+		profiles.sort((a, b) => b.HighestScore - a.HighestScore);
+		// Cap at 100 profiles to avoid huge payloads
+		const capped = profiles.slice(0, 100);
+
+		return new Response(JSON.stringify({ Profiles: capped }), {
 			headers: { ...cors, 'Content-Type': 'application/json' },
 		});
 	}
@@ -333,6 +470,12 @@ export default {
 			return env.LEADERBOARD.get(id).fetch(request);
 		}
 
+		// Player profile endpoints — routed to the singleton PlayerProfiles DO
+		if (url.pathname === '/api/profile' || url.pathname === '/api/profiles') {
+			const id = env.PLAYER_PROFILES.idFromName('global');
+			return env.PLAYER_PROFILES.get(id).fetch(request);
+		}
+
 		// REST: generate a fresh room code (client then connects via /ws)
 		if (url.pathname === '/api/create' && request.method === 'POST') {
 			const code = generateCode();
@@ -350,7 +493,7 @@ export default {
 		}
 
 		return new Response(
-			'Fallout 67 v1.0\nPOST /api/create      →  get a room code\nGET  /ws?code=X&name=Y →  WebSocket\nPOST /api/score       →  submit score\nGET  /api/leaderboard  →  top 20 scores',
+			'Fallout 67 v1.1\nPOST /api/create      →  get a room code\nGET  /ws?code=X&name=Y →  WebSocket\nPOST /api/score       →  submit score\nGET  /api/leaderboard  →  top 20 scores\nPOST /api/profile     →  upsert profile\nGET  /api/profile?name=X → fetch profile',
 			{ headers: { 'Content-Type': 'text/plain', ...cors } },
 		);
 	},

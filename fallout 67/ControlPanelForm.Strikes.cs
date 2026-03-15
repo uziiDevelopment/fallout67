@@ -176,6 +176,7 @@ namespace fallover_67
                 else if (weaponIndex == 3) GameEngine.Player.OrbitalLasers--;
                 // weaponIndex 4 (Satellite Killer) is handled exclusively through FireSatelliteStrikeAsync
                 GameEngine.Player.NukesUsed++;
+                ProfileManager.RecordNukeLaunch(weaponIndex);
 
                 long preCalculatedDmg = CombatEngine.PreCalculatePlayerDamage(targetName, weaponIndex);
 
@@ -221,6 +222,14 @@ namespace fallover_67
             if (result.Logs.Any(l => l.Contains("SURRENDER") || l.Contains("VICTORY") || l.Contains("COLLAPSED")))
             {
                 AddNotification("NATION SECURED", $"{targetName.ToUpper()} has surrendered", Color.Gold);
+                bool surrendered = result.Logs.Any(l => l.Contains("SURRENDER"));
+                ProfileManager.RecordNationConquered(surrendered);
+            }
+
+            // Track kills from this strike
+            if (GameEngine.Nations.TryGetValue(targetName, out var strikeTarget))
+            {
+                ProfileManager.RecordKills(calculatedDmg);
             }
 
             RefreshData();
@@ -369,6 +378,7 @@ namespace fallover_67
                 logBox.SelectionColor = cyanText;
                 LogMsg($"[IRON DOME] ⚡ Missile from {attackerName.ToUpper()} INTERCEPTED!");
                 AddNotification("INTERCEPT SUCCESS", $"Dome neutralized {attackerName.ToUpper()} warhead", Color.Cyan, 4f);
+                ProfileManager.RecordMissileIntercepted();
                 return;
             }
 
@@ -376,7 +386,9 @@ namespace fallover_67
             long popBefore = GameEngine.Player.Population;
             var logs = CombatEngine.ExecuteEnemyStrike(attackerName);
             long popAfter = GameEngine.Player.Population;
-            _cumulativeDamageThisWave += (popBefore - popAfter);
+            long damageTaken = popBefore - popAfter;
+            _cumulativeDamageThisWave += damageTaken;
+            ProfileManager.RecordDamageAbsorbed(damageTaken);
             
             // DEAD HAND: Automatic Submarine Retaliation
             if (GameEngine.Nations.TryGetValue(attackerName, out Nation attacker))
@@ -454,6 +466,7 @@ namespace fallover_67
             int lootPct = (int)(Math.Min(1.0, fraction * 2.0 + 0.10) * 100);
             logBox.SelectionColor = amberText;
             LogMsg($"[COMMAND] {troopCount:N0} troops deployed to {selectedTarget.ToUpper()}. ETA: {etaStr}. Est. extraction efficiency: {lootPct}%.");
+            ProfileManager.CurrentProfile.TroopMissionsLaunched++;
 
             if (_isMultiplayer && _mpClient != null)
                 _ = _mpClient.SendGameActionAsync(new { type = "deploy", target = selectedTarget, fraction });

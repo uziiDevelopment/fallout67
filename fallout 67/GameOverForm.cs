@@ -368,7 +368,10 @@ namespace fallover_67
                 string t = $"{e.Seconds / 60}m{e.Seconds % 60:D2}s";
                 bool   isMe = _victory && (i + 1) == _playerRank;
                 string marker = isMe ? "►" : " ";
-                _scoreList.Items.Add($" {marker}#{i + 1,-3}  {e.Score,12:N0}   {e.Name,-14}  ({e.Nation}, {t})");
+                string ago   = GetTimeAgo(e.Date);
+
+                string txt = $" {marker}#{i + 1,-3}  {e.Score,12:N0}   {e.Name,-14}  ({e.Nation}, {t})";
+                _scoreList.Items.Add(txt.PadRight(56) + ago);
             }
 
             // Highlight player row
@@ -387,6 +390,20 @@ namespace fallover_67
 
             _statusLabel.Text = $"Top {_scores.Count} commanders worldwide";
             _leaderboardLoaded = true;
+        }
+
+        private string GetTimeAgo(string dateString)
+        {
+            if (string.IsNullOrWhiteSpace(dateString)) return "";
+            if (DateTime.TryParse(dateString, out DateTime dt))
+            {
+                var span = DateTime.UtcNow - dt.ToUniversalTime();
+                if (span.TotalMinutes < 1) return "just now";
+                if (span.TotalHours < 1) return $"{(int)span.TotalMinutes}m ago";
+                if (span.TotalDays < 1) return $"{(int)span.TotalHours}h ago";
+                return $"{(int)span.TotalDays}d ago";
+            }
+            return dateString;
         }
 
         private static void DrawPanelBorder(Graphics g, Rectangle r, Color c)

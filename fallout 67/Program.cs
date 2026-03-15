@@ -14,18 +14,31 @@ namespace fallover_67
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            var lobby = new LobbyForm();
-            if (lobby.ShowDialog() != DialogResult.OK) return;
+            // Load persistent player profile
+            ProfileManager.Load();
 
-            if (lobby.IsMultiplayer)
+            while (true)
             {
-                GameEngine.InitializeWorld(lobby.SelectedCountry, lobby.GameSeed);
-                Application.Run(new ControlPanelForm(lobby.MpClient!, lobby.MpPlayers!, lobby.ServerUrl, lobby.MinigamesEnabled));
-            }
-            else
-            {
-                GameEngine.InitializeWorld(lobby.SelectedCountry);
-                Application.Run(new ControlPanelForm(lobby.ServerUrl, lobby.MinigamesEnabled));
+                var lobby = new LobbyForm();
+                if (lobby.ShowDialog() != DialogResult.OK) break;
+
+                // Record match start in profile
+                ProfileManager.RecordGameStart(lobby.SelectedCountry, lobby.IsMultiplayer);
+
+                ControlPanelForm mainForm;
+
+                if (lobby.IsMultiplayer)
+                {
+                    GameEngine.InitializeWorld(lobby.SelectedCountry, lobby.GameSeed);
+                    mainForm = new ControlPanelForm(lobby.MpClient!, lobby.MpPlayers!, lobby.ServerUrl, lobby.MinigamesEnabled);
+                }
+                else
+                {
+                    GameEngine.InitializeWorld(lobby.SelectedCountry);
+                    mainForm = new ControlPanelForm(lobby.ServerUrl, lobby.MinigamesEnabled);
+                }
+
+                Application.Run(mainForm);
             }
         }
     }
