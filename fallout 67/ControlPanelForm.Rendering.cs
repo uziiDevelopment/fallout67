@@ -234,6 +234,7 @@ namespace fallover_67
                 _currentScreenCoords[n.Name] = ToScreenPoint(new PointLatLng(n.MapY, n.MapX));
 
             PointF pSc = ToScreenPoint(new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX));
+            _currentScreenCoords[GameEngine.Player.NationName] = pSc;
 
             bool isBlind = GameEngine.Player.IsSatelliteBlind;
 
@@ -750,6 +751,11 @@ namespace fallover_67
                             {
                                 // Salvage logic
                                 TrySalvageWreck(sub);
+                            }
+                            else if (sub.IsRevealed && !sub.IsDestroyed)
+                            {
+                                // Attack enemy submarine
+                                AttackEnemySubmarine(sub);
                             }
                             return;
                         }

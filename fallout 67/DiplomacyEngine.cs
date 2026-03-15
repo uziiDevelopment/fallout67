@@ -136,27 +136,38 @@ namespace fallover_67
                 victimPop = victim.Population;
             else return false;
 
-            float chance = 0.002f;
+            // Minimum alliance age before betrayal is even possible (60 ticks = 60 seconds)
+            int age = 0;
+            betrayer.Diplomacy.AllianceAge.TryGetValue(victimName, out age);
+            if (age < 60) return false; // Alliances are safe for the first 60 seconds
 
-            // Alliance age: older alliances slightly more likely to fracture
-            if (betrayer.Diplomacy.AllianceAge.TryGetValue(victimName, out int age))
-                chance += age * 0.00005f;
+            float chance = 0.0008f; // Lower base chance
+
+            // Alliance age: only starts mattering after 120 ticks
+            if (age > 120)
+                chance += (age - 120) * 0.000015f; // Much slower ramp
 
             // Power disparity: betrayer much stronger = more tempted
             float powerRatio = (float)betrayer.Population / Math.Max(1, victimPop);
-            if (powerRatio > 2f) chance += (powerRatio - 2f) * 0.001f;
+            if (powerRatio > 3f) chance += (powerRatio - 3f) * 0.0005f; // Only if 3x stronger
 
-            // Victim weakened
+            // Victim weakened — but less aggressive
             long victimMax = victimName == GameEngine.Player.NationName ? GameEngine.Player.MaxPopulation : (victim?.MaxPopulation ?? 1);
-            if ((float)victimPop / victimMax < 0.3f) chance += 0.004f;
+            if ((float)victimPop / victimMax < 0.2f) chance += 0.001f; // Only below 20%, and smaller bump
 
             // Smarter nations betray less randomly
             chance -= betrayer.Difficulty * 0.0003f;
 
-            // Anger at victim increases chance
-            if (betrayer.AngerLevel > 5) chance += 0.002f;
+            // Anger at victim increases chance (but needs high anger)
+            if (betrayer.AngerLevel >= 7) chance += 0.001f;
 
-            return rng.NextDouble() < Math.Max(0, chance);
+            // Positive diplomacy mood = much less likely to betray
+            chance -= betrayer.Diplomacy.DiplomacyMood * 0.001f;
+
+            // Sanctioned nations are more desperate and backstabby
+            if (betrayer.IsSanctioned) chance += 0.0005f;
+
+            return rng.NextDouble() < Math.Max(0, Math.Min(0.01f, chance)); // Hard cap at 1%
         }
 
         // ── Resource Sharing ────────────────────────────────────────────────────

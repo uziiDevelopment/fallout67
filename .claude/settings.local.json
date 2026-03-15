@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(find \"N:/c# code/fallout 67\" -maxdepth 2 -type f -name \"README*\" -o -name \"CLAUDE*\" -o -name \".cursorrules\" 2>/dev/null | head -20)",
-      "Bash(ls -la \"N:/c# code/fallout 67/fallout 67\" | grep -E \"\\\\.\\(cs|csproj|resx\\)$\")"
+      "Bash(ls -la \"N:/c# code/fallout 67/fallout 67\" | grep -E \"\\\\.\\(cs|csproj|resx\\)$\")",
+      "Bash(grep:*)"
     ]
   }
 }

@@ -85,16 +85,18 @@ namespace fallover_67
 
             if (target.Population <= 0)
             {
-                target.IsDefeated = true;
-                if (!wasAlreadyDefeated)
+                // Don't mark human-controlled nations as defeated — their own client decides
+                if (!target.IsHumanControlled)
+                    target.IsDefeated = true;
+                if (!wasAlreadyDefeated && !target.IsHumanControlled)
                     result.Logs.Add($"[VICTORY] {target.Name.ToUpper()} GOVERNMENT HAS COLLAPSED. Nation is completely annihilated.");
-                
+
                 CollectRetaliators(target, result);
                 return result;
             }
 
             double healthPercent = (double)target.Population / target.MaxPopulation;
-            if (healthPercent < 0.4)
+            if (healthPercent < 0.4 && !target.IsHumanControlled)
             {
                 double surrenderChance = (0.5 - healthPercent) - (target.Difficulty * 0.05);
                 if (surrenderChance + rng.NextDouble() > 0.4)
@@ -296,11 +298,24 @@ namespace fallover_67
                 target.Money = (long)(target.Money * 0.5);
             }
 
-            if (target.Population <= 0) 
-            { 
-                target.IsDefeated = true; 
-                return (casualties, !wasAlreadyDefeated); // Only return true if it JUST happened
+            if (target.Population <= 0 && !target.IsHumanControlled)
+            {
+                target.IsDefeated = true;
+                return (casualties, !wasAlreadyDefeated);
             }
+
+            // Surrender check — mirrors ExecuteCombatTurn logic so remote clients stay in sync
+            double healthPercent = (double)target.Population / target.MaxPopulation;
+            if (healthPercent < 0.4 && !target.IsHumanControlled)
+            {
+                double surrenderChance = (0.5 - healthPercent) - (target.Difficulty * 0.05);
+                if (surrenderChance + rng.NextDouble() > 0.4)
+                {
+                    target.IsDefeated = true;
+                    return (casualties, !wasAlreadyDefeated);
+                }
+            }
+
             return (casualties, false);
         }
 

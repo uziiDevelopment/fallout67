@@ -177,9 +177,24 @@ namespace fallover_67
                     // Strategic Layer
                     case "sanction":
                     case "un_propose":
+                    case "un_vote":
                     case "spy_result":
                     case "spy_deploy":
+                    case "food_aid":
+                    case "nuclear_winter_sync":
                         HandleRemoteStrategicAction(action); break;
+
+                    // Nation defeat sync
+                    case "nation_defeated":
+                        HandleRemoteNationDefeated(action, senderName); break;
+
+                    // Player-to-Player alliances
+                    case "alliance_request":
+                        HandleAllianceRequest(action, senderName); break;
+                    case "alliance_accept":
+                        HandleAllianceAccept(action, senderName); break;
+                    case "alliance_reject":
+                        HandleAllianceReject(action, senderName); break;
 
                     default:
                         // Unknown action type — ignore gracefully
@@ -357,7 +372,11 @@ namespace fallover_67
                         logBox.SelectionColor = amberText;
                         LogMsg($"[IMPACT] {target.ToUpper()} — {cas:N0} casualties from {senderName.ToUpper()}'s strike.{(def ? " NATION DEFEATED." : "")}");
 
-                        if (def) AddNotification("NATION FALLEN", $"{target.ToUpper()} was defeated by {senderName.ToUpper()}", Color.Orange, 6f);
+                        if (def)
+                        {
+                            AddNotification("NATION FALLEN", $"{target.ToUpper()} was defeated by {senderName.ToUpper()}", Color.Orange, 6f);
+                            CheckGameOver();
+                        }
                         RefreshData();
                     }
                 });
@@ -541,16 +560,62 @@ namespace fallover_67
             RefreshData();
         }
 
+        // ── Nation defeat sync ────────────────────────────────────────────
+        private void HandleRemoteNationDefeated(JsonElement action, string senderName)
+        {
+            string nationName = SafeStr(action, "nation");
+            if (string.IsNullOrEmpty(nationName)) return;
+
+            if (GameEngine.Nations.TryGetValue(nationName, out var nation))
+            {
+                if (!nation.IsDefeated)
+                {
+                    nation.IsDefeated = true;
+                    nation.Population = Math.Min(nation.Population, 0);
+
+                    logBox.SelectionColor = amberText;
+                    LogMsg($"[DEFEAT] {nationName.ToUpper()} has been defeated by {senderName.ToUpper()}!");
+                    AddNotification("NATION FALLEN", $"{nationName.ToUpper()} defeated", Color.Gold, 6f);
+
+                    RefreshData();
+                    CheckGameOver();
+                }
+            }
+        }
+
         // ── Diplomacy messages ──────────────────────────────────────────────
         private void HandleRemoteDiplomacySummit(JsonElement action)
         {
             string dn1 = SafeStr(action, "nation1");
             string dn2 = SafeStr(action, "nation2");
+            string host = SafeStr(action, "host");
             if (string.IsNullOrEmpty(dn1) || string.IsNullOrEmpty(dn2)) return;
+            if (string.IsNullOrEmpty(host)) host = dn2; // fallback
 
             logBox.SelectionColor = amberText;
             LogMsg($"[DIPLOMACY] {dn1.ToUpper()} is sending a diplomatic plane to {dn2.ToUpper()}.");
             AddNotification("REMOTE SUMMIT", $"{dn1} → {dn2}", Color.Gold, 5f);
+
+            // Replicate the summit plane flight locally so all clients see the animation
+            var (startLat, startLng) = DiplomacyEngine.GetNationCoords(dn1);
+            var (hostLat, hostLng) = DiplomacyEngine.GetNationCoords(host);
+
+            var summit = new SummitFlight
+            {
+                Nation1 = dn1,
+                Nation2 = dn2,
+                HostNation = host,
+                StartLat = startLat,
+                StartLng = startLng,
+                EndLat = hostLat,
+                EndLng = hostLng,
+                Speed = 0.12f,
+                IsPlayerInitiated = false,  // Not our plane
+                IsPlayerPlane = true,       // It IS a player's plane (remote player)
+                NegotiationBonus = 0f       // Remote — outcome decided by sender
+            };
+
+            lock (_animLock) GameEngine.ActiveSummits.Add(summit);
         }
 
         private void HandleRemoteDiplomacyAlliance(JsonElement action)
@@ -613,6 +678,86 @@ namespace fallover_67
             if (el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number)
                 return v.GetDouble();
             return fallback;
+        }
+
+        // ── Player-to-Player Alliance Handling ────────────────────────────────
+        private void HandleAllianceRequest(JsonElement action, string senderName)
+        {
+            string from = SafeStr(action, "from");
+            string target = SafeStr(action, "target");
+
+            // Only handle if this is directed at us
+            if (target != GameEngine.Player.NationName) return;
+
+            if (GameEngine.Player.Allies.Contains(from))
+            {
+                LogMsg($"[DIPLOMACY] {from.ToUpper()} requested alliance but you're already allies.");
+                return;
+            }
+
+            if (GameEngine.Player.Allies.Count >= GameEngine.Player.MaxAllies)
+            {
+                // Auto-reject — alliance cap
+                _ = _mpClient!.SendGameActionAsync(new { type = "alliance_reject", from = GameEngine.Player.NationName, target = from });
+                LogMsg($"[DIPLOMACY] {from.ToUpper()} requested alliance but your alliance slots are full.");
+                return;
+            }
+
+            // Show accept/reject dialog
+            var result = MessageBox.Show(
+                $"{from.ToUpper()} is proposing a military alliance!\n\nAccepting will make you allies — you'll share intel and coordinate defense.\n\nAccept alliance?",
+                "ALLIANCE REQUEST",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (result == DialogResult.Yes)
+            {
+                // Form the alliance
+                GameEngine.Player.Allies.Add(from);
+                if (GameEngine.Nations.TryGetValue(from, out var fromNation))
+                    fromNation.Allies.Add(GameEngine.Player.NationName);
+
+                _ = _mpClient!.SendGameActionAsync(new { type = "alliance_accept", from = GameEngine.Player.NationName, target = from });
+                logBox.SelectionColor = Color.Cyan;
+                LogMsg($"[DIPLOMACY] Alliance formed with {from.ToUpper()}!");
+                AddNotification("ALLIANCE FORMED", $"Allied with {from.ToUpper()}", Color.Cyan, 5f);
+            }
+            else
+            {
+                _ = _mpClient!.SendGameActionAsync(new { type = "alliance_reject", from = GameEngine.Player.NationName, target = from });
+                LogMsg($"[DIPLOMACY] Alliance request from {from.ToUpper()} rejected.");
+            }
+            RefreshData();
+        }
+
+        private void HandleAllianceAccept(JsonElement action, string senderName)
+        {
+            string from = SafeStr(action, "from");
+            string target = SafeStr(action, "target");
+
+            if (target != GameEngine.Player.NationName) return;
+
+            if (!GameEngine.Player.Allies.Contains(from))
+                GameEngine.Player.Allies.Add(from);
+            if (GameEngine.Nations.TryGetValue(from, out var fromNation) && !fromNation.Allies.Contains(GameEngine.Player.NationName))
+                fromNation.Allies.Add(GameEngine.Player.NationName);
+
+            logBox.SelectionColor = Color.Cyan;
+            LogMsg($"[DIPLOMACY] {from.ToUpper()} ACCEPTED your alliance proposal!");
+            AddNotification("ALLIANCE ACCEPTED", $"{from.ToUpper()} is now your ally!", Color.Cyan, 6f);
+            RefreshData();
+        }
+
+        private void HandleAllianceReject(JsonElement action, string senderName)
+        {
+            string from = SafeStr(action, "from");
+            string target = SafeStr(action, "target");
+
+            if (target != GameEngine.Player.NationName) return;
+
+            logBox.SelectionColor = amberText;
+            LogMsg($"[DIPLOMACY] {from.ToUpper()} REJECTED your alliance proposal.");
+            AddNotification("ALLIANCE REJECTED", $"{from.ToUpper()} declined", amberText, 4f);
         }
     }
 }

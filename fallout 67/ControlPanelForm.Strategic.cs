@@ -10,7 +10,7 @@ namespace fallover_67
     public partial class ControlPanelForm : Form
     {
         // ── Strategic Layer UI ────────────────────────────────────────────────
-        private Button btnSanction, btnDeploySpy, btnUNPropose;
+        private Button btnSanction, btnDeploySpy, btnUNPropose, btnSendFood;
         private Label lblStrategicStatus;
         private int _economyTickCounter = 0;
         private int _stratTickCounter = 0;
@@ -32,6 +32,10 @@ namespace fallover_67
             btnUNPropose = CreateButton("UN RESOLUTION", 360, 22, 170, 30, Color.FromArgb(0, 20, 60), Color.CornflowerBlue);
             btnUNPropose.Click += BtnUNPropose_Click;
 
+            // Row 1: Food Aid
+            btnSendFood = CreateButton("SEND FOOD AID", 540, 22, 150, 30, Color.FromArgb(0, 50, 0), Color.LightGreen);
+            btnSendFood.Click += BtnSendFood_Click;
+
             // Status label — shows economy, sanctions, spies, UN, doomsday clock
             lblStrategicStatus = new Label
             {
@@ -45,6 +49,7 @@ namespace fallover_67
             grpStrategic.Controls.Add(btnSanction);
             grpStrategic.Controls.Add(btnDeploySpy);
             grpStrategic.Controls.Add(btnUNPropose);
+            grpStrategic.Controls.Add(btnSendFood);
             grpStrategic.Controls.Add(lblStrategicStatus);
             this.Controls.Add(grpStrategic);
 
@@ -153,7 +158,7 @@ namespace fallover_67
             // AI strategic actions (sanctions, UN proposals) — every 15 ticks
             if (_stratTickCounter % 15 == 0)
             {
-                var aiLogs = StrategicEngine.TickAIStrategicActions();
+                var (aiLogs, newResolutions) = StrategicEngine.TickAIStrategicActions();
                 foreach (var msg in aiLogs)
                 {
                     bool isSanction = msg.Contains("SANCTIONS");
@@ -166,6 +171,10 @@ namespace fallover_67
                     if (isUN)
                         AddNotification("UN PROPOSAL", msg.Substring(msg.IndexOf(']') + 2), Color.CornflowerBlue, 5f);
                 }
+
+                // Prompt player to vote on AI-proposed resolutions
+                foreach (var res in newResolutions)
+                    PromptPlayerUNVote(res);
             }
 
             // UN: every tick
@@ -186,18 +195,25 @@ namespace fallover_67
                     AddNotification("UN RESOLUTION VETOED", summary, Color.OrangeRed, 5f);
             }
 
-            // Nuclear winter: every tick
-            var (justStarted, playerLoss, nationLosses) = StrategicEngine.TickNuclearWinter();
-            if (justStarted)
+            // Nuclear winter: every tick (only host runs simulation in MP)
+            if (!_isMultiplayer || _mpClient == null || _mpClient.IsHost)
             {
-                logBox.SelectionColor = Color.DeepSkyBlue;
-                LogMsg("[GLOBAL EVENT] NUCLEAR WINTER HAS BEGUN — Temperatures plunging worldwide. Crops failing. Population declining.");
-                AddNotification("NUCLEAR WINTER", "Global temperatures plummeting", Color.DeepSkyBlue, 10f);
-            }
-            if (playerLoss > 0)
-            {
-                logBox.SelectionColor = Color.DeepSkyBlue;
-                LogMsg($"[NUCLEAR WINTER] Your nation lost {playerLoss:N0} citizens to famine and radiation.");
+                var (justStarted, playerLoss, nationLosses) = StrategicEngine.TickNuclearWinter();
+                if (justStarted)
+                {
+                    logBox.SelectionColor = Color.DeepSkyBlue;
+                    LogMsg("[GLOBAL EVENT] NUCLEAR WINTER HAS BEGUN — Temperatures plunging worldwide. Crops failing. Population declining.");
+                    AddNotification("NUCLEAR WINTER", "Global temperatures plummeting", Color.DeepSkyBlue, 10f);
+                }
+                if (playerLoss > 0)
+                {
+                    logBox.SelectionColor = Color.DeepSkyBlue;
+                    LogMsg($"[NUCLEAR WINTER] Your nation lost {playerLoss:N0} citizens to famine and radiation.");
+                }
+
+                // Host broadcasts nuclear winter state every 5 ticks
+                if (_stratTickCounter % 5 == 0)
+                    BroadcastNuclearWinterSync();
             }
 
             // Update strategic display every tick
@@ -374,7 +390,7 @@ namespace fallover_67
             var form = new Form
             {
                 Text = "UN SECURITY COUNCIL",
-                Size = new Size(420, 340),
+                Size = new Size(420, 385),
                 StartPosition = FormStartPosition.CenterParent,
                 BackColor = Color.FromArgb(10, 10, 30),
                 FormBorderStyle = FormBorderStyle.FixedDialog,
@@ -389,16 +405,40 @@ namespace fallover_67
             var btnNoFirst = CreateButton("NO FIRST STRIKE PACT", 10, 130, 380, 35, Color.FromArgb(0, 40, 40), cyanText);
             var btnFreeze = CreateButton("NUCLEAR FREEZE (ban new nukes)", 10, 170, 380, 35, Color.FromArgb(30, 0, 50), Color.Violet);
             var btnAid = CreateButton("HUMANITARIAN AID (+2% pop all)", 10, 210, 380, 35, Color.FromArgb(0, 40, 0), Color.LimeGreen);
+            var btnRequestAid = CreateButton("REQUEST EMERGENCY AID ($200M, +5% pop for you)", 10, 255, 380, 35, Color.FromArgb(0, 30, 10), Color.LightGreen);
 
             UNResolutionType? chosen = null;
+            bool requestedEmergencyAid = false;
             btnCeasefire.Click += (s, ev) => { chosen = UNResolutionType.Ceasefire; form.Close(); };
             btnSanctions.Click += (s, ev) => { chosen = UNResolutionType.Sanctions; form.Close(); };
             btnNoFirst.Click += (s, ev) => { chosen = UNResolutionType.NoFirstStrike; form.Close(); };
             btnFreeze.Click += (s, ev) => { chosen = UNResolutionType.NuclearFreeze; form.Close(); };
             btnAid.Click += (s, ev) => { chosen = UNResolutionType.HumanitarianAid; form.Close(); };
+            btnRequestAid.Click += (s, ev) => { requestedEmergencyAid = true; form.Close(); };
 
-            form.Controls.AddRange(new Control[] { lbl, btnCeasefire, btnSanctions, btnNoFirst, btnFreeze, btnAid });
+            form.Controls.AddRange(new Control[] { lbl, btnCeasefire, btnSanctions, btnNoFirst, btnFreeze, btnAid, btnRequestAid });
             form.ShowDialog(this);
+
+            // Handle emergency aid request (no vote needed)
+            if (requestedEmergencyAid)
+            {
+                if (GameEngine.Player.Money < 200)
+                {
+                    MessageBox.Show("Emergency aid request costs $200M.", "INSUFFICIENT FUNDS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                GameEngine.Player.Money -= 200;
+                GameEngine.Player.UNCooldown = 20;
+                long recovered = GameEngine.Player.MaxPopulation / 20; // 5% pop recovery
+                GameEngine.Player.Population = Math.Min(GameEngine.Player.MaxPopulation, GameEngine.Player.Population + recovered);
+
+                logBox.SelectionColor = Color.LightGreen;
+                LogMsg($"[UN AID] Emergency food aid received from the UN — {recovered:N0} citizens saved from famine.");
+                AddNotification("UN AID RECEIVED", $"+{recovered:N0} population", Color.LightGreen, 5f);
+                RefreshData();
+                return;
+            }
 
             if (chosen == null) return;
 
@@ -433,9 +473,98 @@ namespace fallover_67
                 _ = _mpClient.SendGameActionAsync(new
                 {
                     type = "un_propose",
+                    proposedBy = GameEngine.Player.NationName,
                     resolutionType = chosen.Value.ToString(),
                     target = sanctionTarget,
                     resolutionId = res.Id
+                });
+            }
+
+            RefreshData();
+        }
+
+        // ── Food Aid — Combat Famine ──────────────────────────────────────────
+        private void BtnSendFood_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(selectedTarget))
+            {
+                // No target selected — send food to yourself
+                if (GameEngine.Player.Money < 300)
+                {
+                    MessageBox.Show("Food aid costs $300M.", "INSUFFICIENT FUNDS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                GameEngine.Player.Money -= 300;
+                long recovered = GameEngine.Player.MaxPopulation / 20; // 5% pop recovery
+                GameEngine.Player.Population = Math.Min(GameEngine.Player.MaxPopulation, GameEngine.Player.Population + recovered);
+
+                logBox.SelectionColor = Color.LightGreen;
+                LogMsg($"[FOOD AID] Emergency rations distributed — {recovered:N0} citizens saved from famine.");
+                AddNotification("FOOD AID", $"+{recovered:N0} population", Color.LightGreen, 3f);
+                RefreshData();
+                return;
+            }
+
+            // Self-targeting — send food to yourself
+            if (selectedTarget == GameEngine.Player.NationName)
+            {
+                if (GameEngine.Player.Money < 300)
+                {
+                    MessageBox.Show("Food aid costs $300M.", "INSUFFICIENT FUNDS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                GameEngine.Player.Money -= 300;
+                long recovered = GameEngine.Player.MaxPopulation / 20; // 5% pop recovery
+                GameEngine.Player.Population = Math.Min(GameEngine.Player.MaxPopulation, GameEngine.Player.Population + recovered);
+
+                logBox.SelectionColor = Color.LightGreen;
+                LogMsg($"[FOOD AID] Emergency rations distributed — {recovered:N0} citizens saved from famine.");
+                AddNotification("FOOD AID", $"+{recovered:N0} population", Color.LightGreen, 3f);
+                RefreshData();
+                return;
+            }
+
+            if (!GameEngine.Nations.ContainsKey(selectedTarget))
+            {
+                MessageBox.Show("Select a valid target nation.", "NO TARGET", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (GameEngine.Player.Money < 500)
+            {
+                MessageBox.Show("Sending food aid to another nation costs $500M.", "INSUFFICIENT FUNDS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var target = GameEngine.Nations[selectedTarget];
+            if (target.IsDefeated)
+            {
+                MessageBox.Show("Cannot send aid to a defeated nation.", "INVALID TARGET", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            GameEngine.Player.Money -= 500;
+            long targetRecovered = target.MaxPopulation / 15; // ~6.7% recovery
+            target.Population = Math.Min(target.MaxPopulation, target.Population + targetRecovered);
+
+            // Sending food improves relations
+            if (target.AngerLevel > 0) target.AngerLevel = Math.Max(0, target.AngerLevel - 2);
+            target.Diplomacy.DiplomacyMood = Math.Min(1f, target.Diplomacy.DiplomacyMood + 0.15f);
+
+            logBox.SelectionColor = Color.LightGreen;
+            LogMsg($"[FOOD AID] Sent emergency food to {selectedTarget.ToUpper()} — {targetRecovered:N0} citizens saved. Relations improved.");
+            AddNotification("FOOD AID SENT", $"{selectedTarget}: +{targetRecovered:N0} pop", Color.LightGreen, 4f);
+
+            if (_isMultiplayer && _mpClient != null)
+            {
+                _ = _mpClient.SendGameActionAsync(new
+                {
+                    type = "food_aid",
+                    from = GameEngine.Player.NationName,
+                    target = selectedTarget,
+                    recovered = targetRecovered
                 });
             }
 
@@ -468,13 +597,18 @@ namespace fallover_67
                         string resType = SafeStr(data, "resolutionType");
                         string proposedBy = SafeStr(data, "proposedBy", "Unknown");
                         string target = SafeStr(data, "target");
+                        string resId = SafeStr(data, "resolutionId");
                         string? targetOrNull = string.IsNullOrEmpty(target) ? null : target;
                         if (Enum.TryParse<UNResolutionType>(resType, out var unType))
                         {
                             var res = StrategicEngine.ProposeResolution(unType, proposedBy, targetOrNull);
+                            if (!string.IsNullOrEmpty(resId)) res.Id = resId; // sync resolution ID
                             StrategicEngine.CastAIVotes(res);
                             logBox.SelectionColor = Color.CornflowerBlue;
                             LogMsg($"[UN SECURITY COUNCIL] {proposedBy.ToUpper()} proposed: {unType}");
+
+                            // Let the player vote!
+                            PromptPlayerUNVote(res);
                         }
                         break;
                     }
@@ -488,9 +622,153 @@ namespace fallover_67
                         LogMsg($"[INTELLIGENCE] Reports of covert {mission} operation detected in {target.ToUpper()}.");
                         break;
                     }
+
+                case "food_aid":
+                    {
+                        string from = SafeStr(data, "from");
+                        string target = SafeStr(data, "target");
+                        long recovered = SafeLong(data, "recovered");
+
+                        // If food was sent to a nation we track, apply it
+                        if (GameEngine.Nations.TryGetValue(target, out Nation aidTarget))
+                        {
+                            aidTarget.Population = Math.Min(aidTarget.MaxPopulation, aidTarget.Population + recovered);
+                            if (aidTarget.AngerLevel > 0) aidTarget.AngerLevel = Math.Max(0, aidTarget.AngerLevel - 2);
+                        }
+                        // If food was sent to us
+                        if (target == GameEngine.Player.NationName)
+                        {
+                            long playerRecov = GameEngine.Player.MaxPopulation / 15;
+                            GameEngine.Player.Population = Math.Min(GameEngine.Player.MaxPopulation, GameEngine.Player.Population + playerRecov);
+                            AddNotification("FOOD AID RECEIVED", $"{from.ToUpper()} sent food! +{playerRecov:N0} pop", Color.LightGreen, 5f);
+                        }
+
+                        logBox.SelectionColor = Color.LightGreen;
+                        LogMsg($"[FOOD AID] {from.ToUpper()} sent food aid to {target.ToUpper()} — {recovered:N0} saved.");
+                        break;
+                    }
+
+                case "un_vote":
+                    {
+                        string voter = SafeStr(data, "voter");
+                        string voteStr = SafeStr(data, "vote");
+                        string resId = SafeStr(data, "resolutionId");
+
+                        if (Enum.TryParse<UNVote>(voteStr, out var vote))
+                        {
+                            var res = GameEngine.UNResolutions.FirstOrDefault(r => r.Id == resId && r.IsVoting);
+                            if (res != null)
+                            {
+                                res.Votes[voter] = vote;
+                                logBox.SelectionColor = Color.CornflowerBlue;
+                                LogMsg($"[UN VOTE] {voter.ToUpper()} voted {vote} on {res.Type}.");
+                            }
+                        }
+                        break;
+                    }
+
+                case "nuclear_winter_sync":
+                    {
+                        // Host broadcasts winter state — clients sync
+                        bool active = SafeInt(data, "active") == 1;
+                        int tick = SafeInt(data, "tick");
+                        float severity = SafeFloat(data, "severity");
+                        int nukesFired = SafeInt(data, "nukesFired");
+
+                        GameEngine.NuclearWinterActive = active;
+                        GameEngine.NuclearWinterTick = tick;
+                        GameEngine.NuclearWinterSeverity = severity;
+                        GameEngine.GlobalNukesFired = nukesFired;
+
+                        if (active && !GameEngine.NuclearWinterActive)
+                        {
+                            logBox.SelectionColor = Color.DeepSkyBlue;
+                            LogMsg("[GLOBAL EVENT] NUCLEAR WINTER HAS BEGUN — Synced from host.");
+                            AddNotification("NUCLEAR WINTER", "Synced from host", Color.DeepSkyBlue, 8f);
+                        }
+                        break;
+                    }
             }
 
             RefreshData();
+        }
+
+        // ── Player UN Voting ──────────────────────────────────────────────────
+        private void PromptPlayerUNVote(UNResolution res)
+        {
+            string targetStr = res.TargetNation != null ? $"\nTarget: {res.TargetNation.ToUpper()}" : "";
+            string desc = res.Type switch
+            {
+                UNResolutionType.Ceasefire => "Reduce all anger by 3 — stop hostile attacks",
+                UNResolutionType.Sanctions => $"Full sanctions on {res.TargetNation?.ToUpper()} — cripple their economy",
+                UNResolutionType.NoFirstStrike => "Non-hostile nations won't attack — violators face global anger",
+                UNResolutionType.NuclearFreeze => "Ban nuke production — only angry nations will fire",
+                UNResolutionType.HumanitarianAid => "All nations gain +2% population recovery",
+                _ => ""
+            };
+
+            var form = new Form
+            {
+                Text = "UN SECURITY COUNCIL — VOTE",
+                Size = new Size(420, 220),
+                StartPosition = FormStartPosition.CenterParent,
+                BackColor = Color.FromArgb(10, 10, 30),
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false
+            };
+
+            var lbl = new Label
+            {
+                Text = $"Resolution: {res.Type}\nProposed by: {res.ProposedBy.ToUpper()}{targetStr}\n\n{desc}",
+                Location = new Point(10, 15),
+                Size = new Size(390, 80),
+                ForeColor = Color.CornflowerBlue,
+                Font = stdFont
+            };
+            var btnYes = CreateButton("VOTE YES", 10, 110, 120, 35, Color.FromArgb(0, 50, 0), Color.LimeGreen);
+            var btnNo = CreateButton("VOTE NO", 140, 110, 120, 35, Color.FromArgb(50, 0, 0), Color.OrangeRed);
+            var btnAbstain = CreateButton("ABSTAIN", 270, 110, 120, 35, Color.FromArgb(30, 30, 30), Color.Gray);
+
+            UNVote? playerVote = null;
+            btnYes.Click += (s, ev) => { playerVote = UNVote.Yes; form.Close(); };
+            btnNo.Click += (s, ev) => { playerVote = UNVote.No; form.Close(); };
+            btnAbstain.Click += (s, ev) => { playerVote = UNVote.Abstain; form.Close(); };
+
+            form.Controls.AddRange(new Control[] { lbl, btnYes, btnNo, btnAbstain });
+            form.ShowDialog(this);
+
+            UNVote vote = playerVote ?? UNVote.Abstain;
+            res.Votes[GameEngine.Player.NationName] = vote;
+
+            logBox.SelectionColor = Color.CornflowerBlue;
+            LogMsg($"[UN VOTE] You voted {vote} on {res.Type}.");
+
+            if (_isMultiplayer && _mpClient != null)
+            {
+                _ = _mpClient.SendGameActionAsync(new
+                {
+                    type = "un_vote",
+                    voter = GameEngine.Player.NationName,
+                    vote = vote.ToString(),
+                    resolutionId = res.Id
+                });
+            }
+        }
+
+        // ── Nuclear Winter Sync (host broadcasts to clients) ─────────────────
+        private void BroadcastNuclearWinterSync()
+        {
+            if (!_isMultiplayer || _mpClient == null || !_mpClient.IsHost) return;
+
+            _ = _mpClient.SendGameActionAsync(new
+            {
+                type = "nuclear_winter_sync",
+                active = GameEngine.NuclearWinterActive ? 1 : 0,
+                tick = GameEngine.NuclearWinterTick,
+                severity = GameEngine.NuclearWinterSeverity,
+                nukesFired = GameEngine.GlobalNukesFired
+            });
         }
 
         // ── Nuclear Winter Rendering (called from MapPanel_Paint) ─────────

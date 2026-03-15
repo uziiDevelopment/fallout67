@@ -15,6 +15,12 @@ namespace fallover_67
         {
             if (string.IsNullOrEmpty(selectedTarget) || cmbWeapon.SelectedItem == null) return;
 
+            if (selectedTarget == GameEngine.Player.NationName)
+            {
+                MessageBox.Show("Cannot launch a strike on your own nation!", "INVALID TARGET", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             // If in hijack mode, fire the hijacked nation's weapons instead
             if (_isHijacking && _hijackedNation != null)
             {
@@ -252,6 +258,10 @@ namespace fallover_67
                 AddNotification("NATION SECURED", $"{targetName.ToUpper()} has surrendered", Color.Gold);
                 bool surrendered = result.Logs.Any(l => l.Contains("SURRENDER"));
                 ProfileManager.RecordNationConquered(surrendered);
+
+                // Sync defeat to all clients
+                if (_isMultiplayer && _mpClient != null)
+                    _ = _mpClient.SendGameActionAsync(new { type = "nation_defeated", nation = targetName, population = 0L });
             }
 
             // Track kills from this strike
@@ -590,6 +600,67 @@ namespace fallover_67
                     if (_isMultiplayer) _mpClient?.SendGameActionAsync(new { type = "sub_destroy", subId = sub.Id });
                 }
             }
+        }
+
+        private void AttackEnemySubmarine(Submarine sub)
+        {
+            if (sub.IsDestroyed || sub.OwnerId == GameEngine.Player.NationName) return;
+
+            if (GameEngine.Player.StandardNukes <= 0)
+            {
+                MessageBox.Show("No warheads available to attack this submarine.", "NO WEAPONS");
+                return;
+            }
+
+            var result = MessageBox.Show(
+                $"Launch depth charge strike at enemy submarine {sub.Name.ToUpper()}?\n\nThis will use 1 standard warhead.",
+                "ATTACK SUBMARINE", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+            if (result != DialogResult.Yes) return;
+
+            GameEngine.Player.StandardNukes--;
+            GameEngine.Player.NukesUsed++;
+
+            PointLatLng subTarget = new PointLatLng(sub.MapY, sub.MapX);
+            PointLatLng playerStart = new PointLatLng(GameEngine.Player.MapY, GameEngine.Player.MapX);
+
+            logBox.SelectionColor = cyanText;
+            LogMsg($"[STRIKE] Depth charge launched at enemy submarine {sub.Name.ToUpper()}!");
+            AddNotification("SUB ATTACK", $"Targeting {sub.Name.ToUpper()}", Color.OrangeRed, 5f);
+
+            lock (_animLock) activeMissiles.Add(new MissileAnimation
+            {
+                Start = playerStart,
+                End = subTarget,
+                IsPlayerMissile = true,
+                MissileColor = Color.OrangeRed,
+                Speed = 0.5f,
+                OnImpact = () =>
+                {
+                    lock (_animLock) activeExplosions.Add(new ExplosionEffect
+                    {
+                        Center = subTarget,
+                        MaxRadius = 40f,
+                        DamageLines = new[] { "DEPTH CHARGE", $"Target: {sub.Name.ToUpper()}" },
+                        IsPlayerTarget = false
+                    });
+
+                    // Destroy the submarine
+                    sub.Health = 0;
+                    LogMsg($"[SENSORS] Enemy submarine {sub.Name.ToUpper()} has been DESTROYED!");
+                    AddNotification("SUB DESTROYED", $"{sub.Name.ToUpper()} sunk", Color.Gray, 6f);
+
+                    if (_isMultiplayer)
+                        _mpClient?.SendGameActionAsync(new { type = "sub_destroy", subId = sub.Id });
+
+                    RefreshData();
+                }
+            });
+
+            if (_isMultiplayer)
+                _mpClient?.SendGameActionAsync(new { type = "strike", target = "", weapon = 0, playerNation = GameEngine.Player.NationName, damage = 0L });
+
+            RefreshData();
         }
 
         private void TrySalvageWreck(Submarine sub)

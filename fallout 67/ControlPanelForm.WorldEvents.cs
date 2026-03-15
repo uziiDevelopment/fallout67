@@ -141,7 +141,7 @@ namespace fallover_67
             logBox.SelectionColor = allyUnderAttack ? redText : amberText;
             LogMsg($"[WORLD EVENT] {attackerName.ToUpper()} struck {targetName.ToUpper()}! Est. {damage:N0} casualties.");
 
-            if (target.Population <= 0)
+            if (target.Population <= 0 && !target.IsHumanControlled)
             {
                 bool wasDead = target.IsDefeated;
                 target.IsDefeated = true;
@@ -150,10 +150,15 @@ namespace fallover_67
                     logBox.SelectionColor = amberText;
                     LogMsg($"[WORLD EVENT] {targetName.ToUpper()} has been annihilated by {attackerName.ToUpper()}!");
                     AddNotification("NATION ANNIHILATED", $"{targetName.ToUpper()} has been wiped out", Color.Orange, 6f);
+
+                    // Sync defeat to all clients
+                    if (_isMultiplayer && _mpClient != null)
+                        _ = _mpClient.SendGameActionAsync(new { type = "nation_defeated", nation = targetName, population = 0L });
                 }
             }
 
             RefreshData();
+            CheckGameOver();
 
             if (!_isMultiplayer || (_mpClient != null && _mpClient.IsHost))
             {
@@ -342,6 +347,19 @@ namespace fallover_67
                     n.SatelliteBlindUntil = DateTime.MinValue;
                     logBox.SelectionColor = amberText;
                     LogMsg($"[SAT-RESTORE] {n.Name.ToUpper()} launched replacement satellites — targeting grid restored.");
+                }
+            }
+
+            // Scuttle submarines belonging to defeated nations
+            foreach (var sub in GameEngine.Submarines.ToList())
+            {
+                if (sub.IsDestroyed) continue;
+                // Check if the owner nation is defeated
+                if (GameEngine.Nations.TryGetValue(sub.OwnerId, out var ownerNation) && ownerNation.IsDefeated)
+                {
+                    sub.Health = 0;
+                    logBox.SelectionColor = amberText;
+                    LogMsg($"[SENSORS] Submarine {sub.Name.ToUpper()} scuttled — {sub.OwnerId.ToUpper()} has fallen.");
                 }
             }
 

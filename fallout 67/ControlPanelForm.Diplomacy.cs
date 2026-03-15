@@ -24,7 +24,21 @@ namespace fallover_67
 
             var target = GameEngine.Nations[selectedTarget];
             if (target.IsDefeated) { MessageBox.Show("That nation has been defeated.", "INVALID"); return; }
-            if (target.IsHumanControlled) { MessageBox.Show("Cannot form AI alliance with a human player.", "INVALID"); return; }
+            // Human players — send alliance request via multiplayer
+            if (target.IsHumanControlled)
+            {
+                if (_mpClient == null) { MessageBox.Show("Multiplayer not connected.", "ERROR"); return; }
+                _ = _mpClient.SendGameActionAsync(new
+                {
+                    type = "alliance_request",
+                    from = GameEngine.Player.NationName,
+                    target = selectedTarget
+                });
+                LogMsg($"[DIPLOMACY] Alliance request sent to {selectedTarget.ToUpper()}. Awaiting response...");
+                AddNotification("ALLIANCE REQUEST SENT", $"Awaiting {selectedTarget}'s response", cyanText, 5f);
+                GameEngine.Player.DiplomacyCooldown = 15;
+                return;
+            }
             if (GameEngine.Player.Allies.Contains(selectedTarget)) { MessageBox.Show($"You are already allied with {selectedTarget}.", "ALREADY ALLIED"); return; }
             if (GameEngine.Player.Allies.Count >= GameEngine.Player.MaxAllies) { MessageBox.Show($"Maximum {GameEngine.Player.MaxAllies} alliances reached.", "ALLIANCE CAP"); return; }
             if (GameEngine.Player.DiplomacyCooldown > 0) { MessageBox.Show($"Diplomacy cooldown: {GameEngine.Player.DiplomacyCooldown}s remaining.", "COOLDOWN"); return; }

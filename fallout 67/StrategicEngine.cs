@@ -532,10 +532,11 @@ namespace fallover_67
         // AI STRATEGIC BEHAVIOR — AI uses sanctions, spies, UN proposals
         // ═══════════════════════════════════════════════════════════════════════
 
-        /// Called every ~15 ticks. Returns log messages for AI strategic actions.
-        public static List<string> TickAIStrategicActions()
+        /// Called every ~15 ticks. Returns log messages and any new UN resolutions for player voting.
+        public static (List<string> logs, List<UNResolution> newResolutions) TickAIStrategicActions()
         {
             var logs = new List<string>();
+            var newResolutions = new List<UNResolution>();
 
             // Already a vote in progress? Skip AI proposals.
             bool voteInProgress = GameEngine.UNResolutions.Any(r => r.IsVoting);
@@ -611,6 +612,7 @@ namespace fallover_67
                         res.Votes[n.Name] = UNVote.Yes; // proposer votes yes
                         CastAIVotes(res);
                         voteInProgress = true; // prevent multiple proposals per tick
+                        newResolutions.Add(res); // let UI prompt player to vote
 
                         string targetStr = target != null ? $" against {target.ToUpper()}" : "";
                         logs.Add($"[UN SECURITY COUNCIL] {n.Name.ToUpper()} proposes {proposal.Value}{targetStr}.");
@@ -618,7 +620,7 @@ namespace fallover_67
                 }
             }
 
-            return logs;
+            return (logs, newResolutions);
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -874,7 +876,8 @@ namespace fallover_67
                     {
                         n.Population = Math.Max(0, n.Population - nLoss);
                         nationLosses.Add((n.Name, nLoss));
-                        if (n.Population <= 0) n.IsDefeated = true;
+                        // Don't mark human-controlled nations as defeated — their own client handles that
+                        if (n.Population <= 0 && !n.IsHumanControlled) n.IsDefeated = true;
                     }
                 }
 

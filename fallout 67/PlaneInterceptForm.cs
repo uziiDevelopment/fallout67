@@ -21,7 +21,7 @@ namespace fallover_67
         private float _planeExplosion = 0f;
 
         // AA missiles
-        private const int MaxShots = 3;
+        private const int MaxShots = 5;
         private int _shotsLeft;
         private List<AAMissile> _missiles = new();
 
@@ -33,12 +33,14 @@ namespace fallover_67
             public bool Dead;
             public bool Hit;
             public float ExpRadius;
+            public bool IsTracking;  // tracking missiles home in on the plane
+            public int LifeTicks;    // frames alive — tracking expires after a while
         }
 
         // Layout
         private const int W = 800;
         private const int H = 500;
-        private const int HitRadius = 25;
+        private const int HitRadius = 45;
 
         // Timing
         private System.Windows.Forms.Timer _gameTick;
@@ -62,9 +64,9 @@ namespace fallover_67
 
             // Plane starts left, flies right with slight curve
             _planeX = -30;
-            _planeBaseY = 100 + (float)_rng.NextDouble() * 200;
+            _planeBaseY = 120 + (float)_rng.NextDouble() * 160;
             _planeY = _planeBaseY;
-            _planeVX = 2.5f + (float)_rng.NextDouble() * 1.5f;
+            _planeVX = 1.5f + (float)_rng.NextDouble() * 1.0f;
             _planeVY = 0;
 
             this.Text = "AA DEFENSE — INTERCEPT SUMMIT PLANE";
@@ -92,15 +94,15 @@ namespace fallover_67
             if (_planeAlive)
             {
                 _planeX += _planeVX;
-                _jitterPhase += 0.08f;
-                _planeY = _planeBaseY + (float)Math.Sin(_jitterPhase) * 30f + (float)Math.Sin(_jitterPhase * 2.7f) * 15f;
+                _jitterPhase += 0.04f;
+                _planeY = _planeBaseY + (float)Math.Sin(_jitterPhase) * 15f + (float)Math.Sin(_jitterPhase * 2.7f) * 8f;
 
-                // Random speed/direction jitter
-                if (_rng.NextDouble() < 0.03)
+                // Random speed/direction jitter (less frequent and less extreme)
+                if (_rng.NextDouble() < 0.015)
                 {
-                    _planeVX = 2.0f + (float)_rng.NextDouble() * 2.5f;
-                    _planeBaseY += (_rng.Next(-40, 41));
-                    _planeBaseY = Math.Clamp(_planeBaseY, 60, H - 150);
+                    _planeVX = 1.2f + (float)_rng.NextDouble() * 1.5f;
+                    _planeBaseY += (_rng.Next(-20, 21));
+                    _planeBaseY = Math.Clamp(_planeBaseY, 80, H - 150);
                 }
 
                 // Plane escaped
@@ -134,35 +136,44 @@ namespace fallover_67
                     continue;
                 }
 
+                m.LifeTicks++;
+                // Tracking missiles continuously home in on the plane (expires after 180 frames / ~3 sec)
+                if (m.IsTracking && _planeAlive && m.LifeTicks < 180)
+                {
+                    m.TargetX = _planeX;
+                    m.TargetY = _planeY;
+                }
+
                 // Move toward target
                 float dx = m.TargetX - m.X;
                 float dy = m.TargetY - m.Y;
                 float dist = MathF.Sqrt(dx * dx + dy * dy);
-                if (dist < m.Speed)
+
+                // Check proximity to plane (hit detection while in flight too)
+                float pdx = m.X - _planeX;
+                float pdy = m.Y - _planeY;
+                if (_planeAlive && pdx * pdx + pdy * pdy < HitRadius * HitRadius)
+                {
+                    m.Hit = true;
+                    _planeAlive = false;
+                    PlaneDestroyed = true;
+                }
+                else if (dist < m.Speed)
                 {
                     m.X = m.TargetX;
                     m.Y = m.TargetY;
-
-                    // Check hit
-                    float pdx = m.X - _planeX;
-                    float pdy = m.Y - _planeY;
-                    if (_planeAlive && pdx * pdx + pdy * pdy < HitRadius * HitRadius)
-                    {
-                        m.Hit = true;
-                        _planeAlive = false;
-                        PlaneDestroyed = true;
-                    }
-                    else
-                    {
-                        // Miss explosion
-                        m.Hit = true;
-                    }
+                    // Miss explosion (non-tracking missile reached its target point)
+                    m.Hit = true;
                 }
                 else
                 {
                     m.X += dx / dist * m.Speed;
                     m.Y += dy / dist * m.Speed;
                 }
+
+                // Kill missiles that go off screen
+                if (m.X < -50 || m.X > W + 50 || m.Y < -50 || m.Y > H + 50)
+                    m.Dead = true;
             }
 
             // Out of shots and all missiles resolved?
@@ -186,7 +197,8 @@ namespace fallover_67
                 Y = H - 30,
                 TargetX = e.X,
                 TargetY = e.Y,
-                Speed = 10f
+                Speed = 7f,
+                IsTracking = true  // missiles home in on the plane
             });
         }
 
@@ -283,7 +295,7 @@ namespace fallover_67
 
             // HUD
             using var hudBrush = new SolidBrush(amberText);
-            g.DrawString("AA DEFENSE — CLICK TO FIRE AT PLANE", titleFont, hudBrush, 10, 10);
+            g.DrawString("AA DEFENSE — CLICK TO LAUNCH TRACKING MISSILE", titleFont, hudBrush, 10, 10);
 
             using var shotBrush = new SolidBrush(_shotsLeft > 0 ? greenText : Color.Red);
             string shotText = $"SHOTS REMAINING: {_shotsLeft}/{MaxShots}";

@@ -374,6 +374,11 @@ namespace fallover_67
                             LogMsg(l);
                             await Task.Delay(400);
                         }
+
+                        // Sync nation defeat from hijack strike
+                        if (target.IsDefeated && _isMultiplayer && _mpClient != null)
+                            _ = _mpClient.SendGameActionAsync(new { type = "nation_defeated", nation = targetName, population = 0L });
+
                         RefreshData();
                         CheckGameOver();
                     }
@@ -440,6 +445,7 @@ namespace fallover_67
 
             // Broadcast to multiplayer
             if (_isMultiplayer && _mpClient != null)
+            {
                 _ = _mpClient.SendGameActionAsync(new
                 {
                     type = "hack_selfnuke",
@@ -448,6 +454,10 @@ namespace fallover_67
                     damage = totalDamage,
                     nukesUsed = nukesToUse
                 });
+
+                if (target.IsDefeated)
+                    _ = _mpClient.SendGameActionAsync(new { type = "nation_defeated", nation = target.Name, population = 0L });
+            }
 
             GameEngine.Player.HackCooldown = 60;
             RefreshData();
@@ -547,7 +557,10 @@ namespace fallover_67
                         logBox.SelectionColor = Color.Magenta;
                         LogMsg($"[CYBER] {senderName.ToUpper()} triggered self-destruct on {targetNation.ToUpper()}! {actualDmg:N0} casualties.");
                         if (n.IsDefeated)
+                        {
                             AddNotification("NATION DESTROYED", $"{targetNation.ToUpper()} self-destructed", Color.Gold, 6f);
+                            CheckGameOver();
+                        }
                     }
                     RefreshData();
                     break;
@@ -624,6 +637,7 @@ namespace fallover_67
                                     DamageLines = new[] { $"HIJACK: {source.ToUpper()} → {targetNation.ToUpper()}", $"{cas:N0} casualties" },
                                     IsPlayerTarget = false
                                 });
+                                if (def) CheckGameOver();
                                 RefreshData();
                             }
                         });
