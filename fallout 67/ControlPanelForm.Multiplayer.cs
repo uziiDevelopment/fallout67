@@ -137,6 +137,68 @@ namespace fallover_67
             catch { }
         }
 
+        // ── Host Periodic Sync ──────────────────────────────────────────────
+        private async Task BroadcastHostSyncStateAsync()
+        {
+            if (_mpClient == null || !_mpClient.IsConnected || !_mpClient.IsHost) return;
+
+            var playerStats = new List<object>();
+            foreach(var nat in GameEngine.Nations.Values.Where(n => n.IsHumanControlled))
+            {
+                playerStats.Add(new {
+                    nation = nat.Name,
+                    population = nat.Population,
+                    dead = nat.IsDefeated
+                });
+            }
+            // And add host itself
+            playerStats.Add(new {
+                nation = GameEngine.Player.NationName,
+                population = GameEngine.Player.Population,
+                dead = (GameEngine.Player.Population <= 0)
+            });
+
+            try
+            {
+                await _mpClient.SendGameActionAsync(new {
+                    type = "host_sync_state",
+                    stats = playerStats
+                });
+            }
+            catch { }
+        }
+
+        private void HandleHostSyncState(JsonElement action)
+        {
+            if (_mpClient != null && _mpClient.IsHost) return; // Host ignores its own sync
+
+            if (action.TryGetProperty("stats", out var statsEl) && statsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach(var stat in statsEl.EnumerateArray())
+                {
+                    string natName = SafeStr(stat, "nation");
+                    long pop = SafeLong(stat, "population");
+                    bool dead = SafeBool(stat, "dead");
+
+                    if (natName == GameEngine.Player.NationName)
+                    {
+                        GameEngine.Player.Population = pop;
+                        if (dead)
+                        {
+                            GameEngine.Player.Population = 0;
+                        }
+                    }
+                    else if (GameEngine.Nations.TryGetValue(natName, out var nation))
+                    {
+                        nation.Population = pop;
+                        nation.IsDefeated = dead;
+                    }
+                }
+            }
+            RefreshData();
+            CheckGameOver();
+        }
+
         // ── Main action dispatcher ──────────────────────────────────────────
         private void HandleRemoteAction(string senderId, JsonElement action)
         {
@@ -159,6 +221,7 @@ namespace fallover_67
                     case "sub_destroy":  HandleRemoteSubDestroy(action, senderName); break;
                     case "sub_recover":  HandleRemoteSubRecover(action, senderName); break;
                     case "sync_state":   HandleRemoteSyncState(action, senderId, senderName); break;
+                    case "host_sync_state": HandleHostSyncState(action); break;
 
                     // Diplomacy
                     case "diplomacy_summit":   HandleRemoteDiplomacySummit(action); break;
@@ -677,6 +740,16 @@ namespace fallover_67
         {
             if (el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number)
                 return v.GetDouble();
+            return fallback;
+        }
+
+        private static bool SafeBool(JsonElement el, string key, bool fallback = false)
+        {
+            if (el.TryGetProperty(key, out var v))
+            {
+                if (v.ValueKind == JsonValueKind.True) return true;
+                if (v.ValueKind == JsonValueKind.False) return false;
+            }
             return fallback;
         }
 

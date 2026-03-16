@@ -338,6 +338,14 @@ namespace fallover_67
                     if (n.AngerLevel > 0) n.AngerLevel--;
             }
 
+            hostSyncTick++;
+            if (hostSyncTick >= 3)
+            {
+                hostSyncTick = 0;
+                if (_isMultiplayer && _mpClient != null && _mpClient.IsHost)
+                    _ = BroadcastHostSyncStateAsync();
+            }
+
             // AI satellite restore — blind nations with enough money have a chance to restore early
             foreach (var n in GameEngine.Nations.Values)
             {

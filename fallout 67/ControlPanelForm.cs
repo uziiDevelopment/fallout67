@@ -184,6 +184,7 @@ namespace fallover_67
         private int playerAttackTick = 0;
         private int worldWarTick = 0;
         private int angerDecayTick = 0;
+        private int hostSyncTick = 0;
 
         // ── Scoring ───────────────────────────────────────────────────────────
         private Stopwatch _gameTimer = new Stopwatch();
